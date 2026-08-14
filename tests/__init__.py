@@ -1,0 +1,1 @@
+"""The maille test suite."""

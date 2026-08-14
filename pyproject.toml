@@ -1,0 +1,154 @@
+[project]
+name = "maille"
+version = "0.1.0"
+description = "a level-of-detail mesh wire format: octree-partitioned surfaces written to any object store"
+authors = [{ name = "jhnnsrs", email = "jhnnsrs@gmail.com" }]
+requires-python = ">=3.11"
+readme = "README.md"
+license = "MIT"
+# The core is the format: numpy for the geometry, pyarrow for the three Parquet frames.
+# Everything that reads a mesh in (trimesh) or compresses a blob (meshoptimizer) is an
+# extra, imported lazily, so `import maille` costs two dependencies.
+dependencies = [
+    "numpy>=1.26",
+    "pyarrow>=12",
+]
+
+[project.optional-dependencies]
+# Everything needed to write a collection the ordinary way, which is why it includes
+# meshoptimizer: `codec` defaults to MESHOPT, so a `[mesh]` install without it would fail on
+# the first write rather than on an opt-in path.
+#
+# scipy and shapely are not decoration either. `slice_mesh_plane` -- which is how a mesh is cut
+# at the octree cell planes -- imports `scipy.spatial.cKDTree` outright, and pulls
+# `triangulate_polygon` and `trimesh.path.polygons` (hence shapely) in the same function body,
+# before it ever reaches the branch that would use them. So both are needed to cut a mesh.
+mesh = ["trimesh>=4.0", "scipy>=1.11", "shapely>=2.0", "meshoptimizer>=0.2"]
+# The blob codec on its own, for reading or re-coding blobs without cutting anything.
+meshopt = ["meshoptimizer>=0.2"]
+# Writing to S3 (or anywhere else obstore reaches). maille only needs the protocol, so this
+# is for callers who want a store rather than a directory.
+obstore = ["obstore>=0.10"]
+complete = ["trimesh>=4.0", "scipy>=1.11", "shapely>=2.0", "meshoptimizer>=0.2", "obstore>=0.10"]
+# Installed inside the semantic-release Docker action so build_command has uv.
+build = ["uv>=0.7.12"]
+
+[tool.uv]
+dev-dependencies = [
+    "pytest>=8.3.5",
+    "pytest-cov>=6.1.1",
+    "python-semantic-release>=9.21.0",
+    "ruff>0.11",
+    "basedpyright>=1.21",
+    "trimesh>=4.0",
+    "scipy>=1.11",
+    "shapely>=2.0",
+    "meshoptimizer>=0.2",
+    "obstore>=0.10",
+]
+
+[tool.hatch.build.targets.sdist]
+include = ["maille"]
+
+[tool.hatch.build.targets.wheel]
+include = ["maille"]
+
+[tool.basedpyright]
+include = ["maille"]
+exclude = ["**/__pycache__", "tests"]
+typeCheckingMode = "standard"
+
+[tool.ruff.lint]
+extend-select = ["ANN", "D1"]
+
+[tool.ruff.lint.per-file-ignores]
+# A test's name and docstring say what it asserts; a `-> None` on every one of them is noise
+# that makes the suite harder to read, which is the opposite of what the rule is for.
+"tests/*" = ["ANN001", "ANN201", "ANN202", "ANN206"]
+
+[tool.ruff]
+exclude = [
+    ".bzr",
+    ".direnv",
+    ".eggs",
+    ".git",
+    ".hg",
+    ".mypy_cache",
+    ".nox",
+    ".pants.d",
+    ".pytype",
+    ".ruff_cache",
+    ".svn",
+    ".tox",
+    ".venv",
+    "__pypackages__",
+    "_build",
+    "buck-out",
+    "build",
+    "dist",
+    "node_modules",
+    "venv",
+]
+
+# Same as Black.
+line-length = 100
+
+[tool.pytest.ini_options]
+markers = [
+    "meshopt: marks tests that require the meshoptimizer extra",
+    "trimesh: marks tests that require the mesh extra",
+]
+
+[[tool.pydoc-markdown.loaders]]
+type = "python"
+search_path = ["maille"]
+
+[tool.pydoc-markdown.renderer]
+type = "docusaurus"
+docs_base_path = "website/docs"
+
+[tool.semantic_release]
+version_toml = ["pyproject.toml:project.version"]
+# The semantic-release GitHub Action runs in a Docker container without uv, so
+# install it first (the `build` extra). After PSR bumps the version in
+# pyproject.toml, re-sync just this package's entry in uv.lock and stage it so
+# the release commit carries a consistent lock. $PACKAGE_NAME is injected by PSR.
+build_command = """
+    python -m pip install -e '.[build]'
+    uv lock --upgrade-package "$PACKAGE_NAME"
+    git add uv.lock
+    uv build
+"""
+commit_message = "chore(release): v{version} [skip ci]"
+
+# main -> stable X.Y.Z. next -> prereleases X.Y.Z-rc.N. N.x -> maintenance.
+[tool.semantic_release.branches.main]
+match = "main"
+prerelease = false
+
+[tool.semantic_release.branches.next]
+match = "next"
+prerelease = true
+prerelease_token = "rc"
+
+# Maintenance branches (1.x, 2.x, ...) cut stable patch/minor releases for an
+# older major after a new major has shipped from main.
+[tool.semantic_release.branches.maintenance]
+match = '^\d+\.x$'
+prerelease = false
+
+# Keep the changelog focused on user-facing changes. These patterns only filter
+# what's rendered -- they do not affect version bumps.
+[tool.semantic_release.changelog]
+exclude_commit_patterns = [
+    '^chore(?:\([^)]*\))?: ',
+    '^ci(?:\([^)]*\))?: ',
+    '^build(?:\([^)]*\))?: ',
+    '^style(?:\([^)]*\))?: ',
+    '^test(?:\([^)]*\))?: ',
+    '^Merge ',
+]
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"

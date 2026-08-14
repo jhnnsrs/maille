@@ -1,0 +1,114 @@
+"""What may be handed to the builder as an object, and how it becomes vertices and faces.
+
+Two shapes are accepted, and they are the same shape underneath:
+
+- a ``trimesh.Trimesh``, which is what a mesh extractor usually hands you;
+- a plain ``(vertices, faces)`` pair of numpy arrays, for a caller who already has them and
+  should not need trimesh in *their* code to pass them.
+
+maille still needs trimesh internally -- ``slice_mesh_plane`` is how a mesh is cut at the cell
+planes, and it is not a function worth reimplementing -- so the extra is load-bearing rather
+than decorative. What the second shape buys is that the dependency stays maille's.
+"""
+
+from __future__ import annotations
+
+from collections.abc import Mapping, Sequence
+from dataclasses import dataclass
+from typing import Any, Union
+
+import numpy as np
+
+from maille.errors import MissingExtraError
+
+#: Anything the builder accepts as one object's geometry.
+MeshSource = Union["Mesh", Any, tuple[Any, Any]]
+
+
+def require_trimesh() -> Any:  # noqa: ANN401
+    """Import trimesh lazily, raising a helpful error if the extra is missing."""
+    try:
+        import trimesh  # type: ignore
+    except ImportError as error:  # pragma: no cover - depends on the environment
+        raise MissingExtraError(
+            "trimesh is required to build a mesh collection -- it is what cuts a mesh at the "
+            "octree cell planes. Install it with `pip install maille[mesh]`."
+        ) from error
+    return trimesh
+
+
+@dataclass(frozen=True)
+class Mesh:
+    """One object's surface: ``(n, 3)`` float vertices in voxels and ``(m, 3)`` int faces."""
+
+    vertices: np.ndarray
+    faces: np.ndarray
+
+    @property
+    def bounds(self) -> tuple[np.ndarray, np.ndarray]:
+        """The axis-aligned bounds, as ``(low, high)``, matching trimesh's attribute."""
+        if not len(self.vertices):
+            zeros = np.zeros(3, dtype=np.float64)
+            return zeros, zeros.copy()
+        return self.vertices.min(axis=0), self.vertices.max(axis=0)
+
+    def as_trimesh(self) -> Any:  # noqa: ANN401
+        """Wrap as a ``trimesh.Trimesh`` for the operations that need one.
+
+        ``process=False``: merging vertices here would move them, and the boundary argument
+        rests on the writer controlling exactly when a vertex moves.
+        """
+        trimesh = require_trimesh()
+        return trimesh.Trimesh(vertices=self.vertices, faces=self.faces, process=False)
+
+
+def coerce_mesh(source: MeshSource) -> Mesh:
+    """Turn whatever was passed for one object into vertices and faces.
+
+    Accepts a :class:`Mesh`, a ``trimesh.Trimesh`` (anything carrying ``.vertices`` and
+    ``.faces``), or a ``(vertices, faces)`` pair.
+    """
+    if isinstance(source, Mesh):
+        return source
+
+    vertices = getattr(source, "vertices", None)
+    faces = getattr(source, "faces", None)
+    if vertices is None or faces is None:
+        if isinstance(source, Sequence) and len(source) == 2:
+            vertices, faces = source[0], source[1]
+        else:
+            raise TypeError(
+                f"An object is a trimesh.Trimesh, a maille.Mesh, or a (vertices, faces) pair; got "
+                f"{type(source).__name__}."
+            )
+
+    vertex_array = np.asarray(vertices, dtype=np.float64)
+    face_array = np.asarray(faces, dtype=np.int64)
+    if vertex_array.ndim != 2 or vertex_array.shape[1] != 3:
+        raise ValueError(f"Vertices come as an (n, 3) array of voxel coordinates, got {vertex_array.shape}.")
+    if face_array.ndim != 2 or face_array.shape[1] != 3:
+        raise ValueError(f"Faces come as an (m, 3) array of triangle indices, got {face_array.shape}.")
+    if face_array.size and (face_array.max() >= len(vertex_array) or face_array.min() < 0):
+        raise ValueError(
+            f"A face indexes vertex {int(face_array.max())} of {len(vertex_array)}, so these faces do not belong to "
+            f"these vertices."
+        )
+    return Mesh(vertices=vertex_array, faces=face_array)
+
+
+def coerce_objects(objects: Mapping[int, MeshSource]) -> dict[int, Mesh]:
+    """Coerce a whole ``{object_id: source}`` mapping, naming the object that failed.
+
+    The ids are the ones the objects carry in whatever they were extracted from -- a label
+    volume's instance ids, say -- and they are written through to ``object_ids`` unchanged.
+    """
+    coerced: dict[int, Mesh] = {}
+    for object_id, source in objects.items():
+        try:
+            coerced[int(object_id)] = coerce_mesh(source)
+        except (TypeError, ValueError) as error:
+            raise type(error)(f"Object {object_id!r}: {error}") from error
+    return coerced
+
+
+__all__ = ["Mesh", "MeshSource", "coerce_mesh", "coerce_objects", "require_trimesh"]
