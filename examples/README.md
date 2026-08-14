@@ -24,6 +24,10 @@ carries its own copy of the demo scene — a segmentation-shaped set of 32 objec
 `x`, keyed by sparse instance ids the way a label image would key them — so you can lift a
 single file out of here and run it anywhere maille is installed.
 
+The three copies of `demo_objects` must stay byte-identical: examples 2 and 3 read the tree
+example 1 wrote, and example 2 measures the decoded meshes *against* that scene. A copy that
+drifts does not fail — it quietly compares against a different mesh.
+
 ## What the output looks like
 
 Both excerpts are from the bundled scene, unchanged, with every default in place — run the

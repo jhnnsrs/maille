@@ -43,7 +43,6 @@ from maille.stores.access import (
     get_bytes,
     get_range_bytes,
     list_paths,
-    payload_bytes,
     put_bytes,
 )
 from maille.stores.directory import DirectoryStore
@@ -70,7 +69,6 @@ __all__ = [
     "get_range_bytes",
     "join",
     "list_paths",
-    "payload_bytes",
     "put_bytes",
     "validate_relative",
 ]

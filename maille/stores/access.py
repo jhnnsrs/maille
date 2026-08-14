@@ -28,10 +28,10 @@ def get_bytes(store: MailleStore, path: str) -> bytes:
     back bytes; both are accepted here so neither has to know about the other.
     """
     path = validate_relative(path)
-    return payload_bytes(store.get(path), store, path)
+    return _payload(store.get(path), store, path)
 
 
-def payload_bytes(result: Any, store: MailleStore, path: str) -> bytes:  # noqa: ANN401
+def _payload(result: Any, store: MailleStore, path: str) -> bytes:  # noqa: ANN401
     """Coerce whatever a store handed back into bytes."""
     if isinstance(result, (bytes, bytearray, memoryview)):
         return bytes(result)
@@ -70,7 +70,7 @@ def get_range_bytes(store: MailleStore, path: str, start: int, length: int) -> b
     ranged: Any = getattr(store, "get_range", None)
     if callable(ranged):
         window = ranged(path, start=start, length=length)
-        return payload_bytes(window, store, path)
+        return _payload(window, store, path)
     return get_bytes(store, path)[start : start + length]
 
 
@@ -82,7 +82,7 @@ async def aget_bytes(store: MailleStore, path: str) -> bytes:
         # `callable()` narrows to a callable returning `object`, so the awaitable is re-widened
         # rather than the await being cast at the call site.
         pending: Any = native(path)
-        return payload_bytes(await pending, store, path)
+        return _payload(await pending, store, path)
     return await asyncio.to_thread(get_bytes, store, path)
 
 
@@ -99,7 +99,7 @@ async def aget_range_bytes(store: MailleStore, path: str, start: int, length: in
     native: Any = getattr(store, "get_range_async", None)
     if callable(native):
         pending: Any = native(path, start=start, length=length)
-        return payload_bytes(await pending, store, path)
+        return _payload(await pending, store, path)
     return await asyncio.to_thread(get_range_bytes, store, path, start, length)
 
 
@@ -142,6 +142,5 @@ __all__ = [
     "get_bytes",
     "get_range_bytes",
     "list_paths",
-    "payload_bytes",
     "put_bytes",
 ]
