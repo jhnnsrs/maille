@@ -33,6 +33,7 @@ it would be a path-traversal surface in whatever is holding the credentials.
 
 from __future__ import annotations
 
+import asyncio
 import os
 from collections.abc import Iterable
 from pathlib import Path
@@ -76,6 +77,25 @@ class RangeReadable(Protocol):
 
     def get_range(self, path: str, *, start: int, length: int | None = None) -> Any:  # noqa: ANN401
         """Read ``length`` bytes from ``start``, or to the end when ``length`` is None."""
+        ...
+
+
+@runtime_checkable
+class AsyncReadable(Protocol):
+    """The async pair, again spelled the way obstore spells them.
+
+    Optional for the same reason ``get_range`` is: a store without them still works, its reads
+    are simply run in a worker thread instead. What they buy is that a viewer fetching forty
+    cells for a frame issues forty overlapping requests rather than forty sequential ones,
+    which on an object store is the difference between a frame and a stall.
+    """
+
+    async def get_async(self, path: str) -> Any:  # noqa: ANN401
+        """Read a whole object."""
+        ...
+
+    async def get_range_async(self, path: str, *, start: int, length: int | None = None) -> Any:  # noqa: ANN401
+        """Read one window of an object."""
         ...
 
 
@@ -157,6 +177,31 @@ def get_range_bytes(store: MailleStore, path: str, start: int, length: int) -> b
     return get_bytes(store, path)[start : start + length]
 
 
+async def aget_bytes(store: MailleStore, path: str) -> bytes:
+    """Read a whole object without blocking the event loop."""
+    path = validate_relative(path)
+    native: Any = getattr(store, "get_async", None)
+    if callable(native):
+        return _payload(await native(path), store, path)
+    return await asyncio.to_thread(get_bytes, store, path)
+
+
+async def aget_range_bytes(store: MailleStore, path: str, start: int, length: int) -> bytes:
+    """Read one window without blocking the event loop.
+
+    Uses the store's own async method when it has one, and otherwise runs the sync path in a
+    worker thread. The thread is not a pretence: the work is a network round trip, so handing
+    it to a thread genuinely overlaps it with the others in flight.
+    """
+    if start < 0 or length < 0:
+        raise FormatError(f"A byte window starts at or after 0 and has a length of at least 0, got {start}:{length}.")
+    path = validate_relative(path)
+    native: Any = getattr(store, "get_range_async", None)
+    if callable(native):
+        return _payload(await native(path, start=start, length=length), store, path)
+    return await asyncio.to_thread(get_range_bytes, store, path, start, length)
+
+
 class StoreFile:
     """A seekable, read-only binary file over a store, so pyarrow can range-read a Parquet part.
 
@@ -169,6 +214,12 @@ class StoreFile:
     ``size`` is passed in rather than discovered: the protocol has no ``head``, and the writer
     already knew each part's length when it serialized it, so the manifest carries it. That
     also keeps this working against a store that can neither stat nor list.
+
+    **It can also be filled from outside**, with :meth:`prime`. pyarrow's reader is synchronous
+    and there is no honest way to make it otherwise, so the async read path inverts the
+    problem: work out which windows a row group needs, fetch them all concurrently, hand them
+    here, and let the parse run against memory. The reads are async; the parse is not, and does
+    not need to be.
     """
 
     #: How much of the tail to pull on the first read into it. A Parquet footer is read as a
@@ -185,6 +236,10 @@ class StoreFile:
         self._closed = False
         self._tail: bytes | None = None
         self._tail_start = max(0, self.size - self.TAIL_BYTES)
+        #: Windows fetched ahead of the parse, as ``(start, payload)``, newest first. There are
+        #: never many -- a footer and the row groups of one batch -- so a scan is the right
+        #: lookup and an interval tree would be furniture.
+        self._primed: list[tuple[int, bytes]] = []
 
     def __repr__(self) -> str:
         """Show the object and its length."""
@@ -240,8 +295,46 @@ class StoreFile:
         self._position += count
         return payload
 
+    def prime(self, start: int, payload: bytes) -> None:
+        """Hand this file a window someone else already fetched."""
+        self._primed.insert(0, (int(start), bytes(payload)))
+
+    def tail_window(self) -> tuple[int, int]:
+        """The ``(start, length)`` of the region a footer parse will read."""
+        return self._tail_start, self.size - self._tail_start
+
+    def has_tail(self) -> bool:
+        """Whether the footer region is already in hand."""
+        return self._tail is not None
+
+    def prime_tail(self, payload: bytes) -> None:
+        """Fill the footer region from an async fetch."""
+        self._tail = bytes(payload)
+
+    def holds(self, start: int, length: int) -> bool:
+        """Whether this window is already in hand, so fetching it again would be waste.
+
+        Worth asking before a prefetch rather than after: a part smaller than the tail window
+        is pulled whole when its footer is read, which covers every row group in it, and a
+        prefetch that did not check would re-fetch the entire part one row group at a time.
+        """
+        if self._tail is not None and start >= self._tail_start:
+            return True
+        return self._served(start, length) is not None
+
+    def _served(self, start: int, length: int) -> bytes | None:
+        """A primed window covering this request, if one is held."""
+        for base, payload in self._primed:
+            if base <= start and start + length <= base + len(payload):
+                offset = start - base
+                return payload[offset : offset + length]
+        return None
+
     def _window(self, start: int, length: int) -> bytes:
-        """One window, served from the cached tail when it falls inside it."""
+        """One window: primed, or from the cached tail, or fetched."""
+        served = self._served(start, length)
+        if served is not None:
+            return served
         if start >= self._tail_start:
             if self._tail is None:
                 self._tail = get_range_bytes(self.store, self.path, self._tail_start, self.size - self._tail_start)
@@ -376,11 +469,14 @@ class MemoryStore:
 
 
 __all__ = [
+    "AsyncReadable",
     "DirectoryStore",
     "MailleStore",
     "MemoryStore",
     "RangeReadable",
     "StoreFile",
+    "aget_bytes",
+    "aget_range_bytes",
     "get_bytes",
     "get_range_bytes",
     "join",

@@ -19,6 +19,7 @@ forty row groups, not the levels they came from.
 
 from __future__ import annotations
 
+import asyncio
 from collections.abc import Iterator, Sequence
 from dataclasses import dataclass
 from functools import cached_property
@@ -40,7 +41,15 @@ from maille.manifest import (
     level_prefix,
 )
 from maille.sources import Mesh
-from maille.store import MailleStore, StoreFile, get_bytes, join, list_paths
+from maille.store import (
+    MailleStore,
+    StoreFile,
+    aget_bytes,
+    aget_range_bytes,
+    get_bytes,
+    join,
+    list_paths,
+)
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import pyarrow as pa
@@ -59,6 +68,34 @@ def _buffer(body: bytes) -> Any:  # noqa: ANN401
     import pyarrow as pa
 
     return pa.BufferReader(body)
+
+
+def _row_group_span(metadata: Any, row_group: int) -> tuple[int, int] | None:  # noqa: ANN401
+    """The ``(start, length)`` of every byte one row group occupies in its part.
+
+    A row group's column chunks are written consecutively, so the span from the first chunk's
+    offset to the end of the last is exactly what a reader has to have -- and one window is
+    what an object store would rather serve than a dozen adjacent ones.
+
+    ``None`` when the metadata does not say, which leaves the caller to fetch lazily instead of
+    guessing a range and reading the wrong bytes.
+    """
+    try:
+        group = metadata.row_group(int(row_group))
+    except Exception:  # noqa: BLE001 - any malformed metadata means "cannot prefetch"
+        return None
+    starts: list[int] = []
+    ends: list[int] = []
+    for index in range(group.num_columns):
+        column = group.column(index)
+        start = column.dictionary_page_offset or column.data_page_offset
+        if start is None:
+            return None
+        starts.append(int(start))
+        ends.append(int(start) + int(column.total_compressed_size))
+    if not starts:
+        return None
+    return min(starts), max(ends) - min(starts)
 
 
 @dataclass(frozen=True)
@@ -354,6 +391,38 @@ class Collection:
         """
         return {}
 
+    @cached_property
+    def _opening(self) -> dict[tuple[int, int], asyncio.Lock]:
+        """One lock per part, so concurrent readers open it once between them."""
+        return {}
+
+    @cached_property
+    def _part_files(self) -> dict[tuple[int, int], StoreFile]:
+        """The :class:`~maille.store.StoreFile` under each open part, for the async path.
+
+        Held separately because it is what a prefetch primes, and because a part opened from a
+        whole-object read has none -- there is nothing left to fetch for it.
+        """
+        return {}
+
+    def _entry(self, level: int, cell: int) -> CellEntry:
+        """One cell's catalog row, or a message naming what was asked for."""
+        entry = self.cells.get((int(level), int(cell)))
+        if entry is None:
+            raise KeyError(f"Level {level} holds no cell {cell}.")
+        return entry
+
+    def _part_entry(self, level: int, part: int) -> FileEntry:
+        """The manifest's entry for one part of one level."""
+        files = self.level_files(level)
+        try:
+            return files[part]
+        except IndexError as error:
+            raise FormatError(
+                f"The cell catalog points at part {part} of level {level}, but the collection names "
+                f"{len(files)} part(s) there."
+            ) from error
+
     def level_files(self, level: int) -> list[FileEntry]:
         """The parts holding one level, from the manifest if it says, by listing if not."""
         declared = self.manifest.level_files(level)
@@ -380,21 +449,16 @@ class Collection:
 
         key = (int(level), int(part))
         if key not in self._parquet_files:
-            files = self.level_files(level)
-            try:
-                entry = files[part]
-            except IndexError as error:
-                raise FormatError(
-                    f"The cell catalog points at part {part} of level {level}, but the collection names "
-                    f"{len(files)} part(s) there."
-                ) from error
+            entry = self._part_entry(level, part)
             path = join(self.prefix, entry.path)
             if entry.size is None:
                 # No recorded length means nothing can seek to the footer, so the part is read
                 # whole. Correct, and the reason the writer bothers to record the length.
                 self._parquet_files[key] = pq.ParquetFile(_buffer(get_bytes(self.store, path)))
             else:
-                self._parquet_files[key] = pq.ParquetFile(StoreFile(self.store, path, entry.size))
+                handle = StoreFile(self.store, path, entry.size)
+                self._parquet_files[key] = pq.ParquetFile(handle)
+                self._part_files[key] = handle
         return self._parquet_files[key]
 
     def geometry(self, level: int) -> pa.Table:
@@ -424,6 +488,8 @@ class Collection:
         """
         self._level_tables.clear()
         self._parquet_files.clear()
+        self._part_files.clear()
+        self._opening.clear()
 
     def _row_group(self, level: int, part: int, row_group: int) -> pa.Table:
         """One row group of one part, fetched as itself."""
@@ -435,9 +501,7 @@ class Collection:
         Costs the row group holding the cell, plus the part's footer the first time that part
         is touched -- never the level.
         """
-        entry = self.cells.get((int(level), int(cell)))
-        if entry is None:
-            raise KeyError(f"Level {level} holds no cell {cell}.")
+        entry = self._entry(level, cell)
         return self._decode(entry, self._table_for(entry))
 
     def _table_for(self, entry: CellEntry) -> pa.Table:
@@ -488,12 +552,7 @@ class Collection:
         group before reading is what turns that adjacency into fewer fetches; yielding in the
         caller's order is what keeps it invisible.
         """
-        entries: list[CellEntry] = []
-        for level, cell in keys:
-            entry = self.cells.get((int(level), int(cell)))
-            if entry is None:
-                raise KeyError(f"Level {level} holds no cell {cell}.")
-            entries.append(entry)
+        entries = [self._entry(level, cell) for level, cell in keys]
 
         groups: dict[tuple[int, int | None, int | None], list[CellEntry]] = {}
         for entry in entries:
@@ -529,6 +588,119 @@ class Collection:
         """The grid box a cell addresses: its origin and its extent, in voxels."""
         return cell_box(int(cell), int(level), self.grid.cell_size)
 
+    # -- reading without blocking the loop --------------------------------- #
+
+    async def aread_cells(
+        self, keys: Sequence[tuple[int, int]], *, concurrency: int = 16
+    ) -> list[DecodedCell]:
+        """Read a planner's selection with every fetch it needs in flight at once.
+
+        A frame is forty cells, and forty sequential round trips to an object store is not a
+        frame. The work is arranged in two waves, because the second cannot be known without
+        the first: opening a part means reading its footer, and only the footer says where a
+        row group's bytes are.
+
+        1. Fetch the footer of every part the selection touches, concurrently.
+        2. Fetch the byte span of every row group it needs, concurrently.
+        3. Parse and decode -- against memory, in a worker thread.
+
+        pyarrow's reader is synchronous and there is no honest way around that, so nothing here
+        pretends otherwise. What is asynchronous is the part that is actually I/O.
+        """
+        entries = [self._entry(level, cell) for level, cell in keys]
+        groups: dict[tuple[int, int | None, int | None], list[CellEntry]] = {}
+        for entry in entries:
+            groups.setdefault((entry.level, entry.part, entry.row_group), []).append(entry)
+
+        gate = asyncio.Semaphore(max(1, int(concurrency)))
+
+        async def guarded(coroutine: Any) -> Any:  # noqa: ANN401
+            async with gate:
+                return await coroutine
+
+        # Only located row groups can be prefetched; an unlocated cell falls through to the
+        # synchronous whole-level path inside `_table_for`, which is its own answer.
+        located: list[tuple[int, int, int]] = [
+            (level, part, group)
+            for level, part, group in groups
+            if part is not None and group is not None
+        ]
+        parts = {(level, part) for level, part, _ in located}
+        await asyncio.gather(*(guarded(self._aopen_part(level, part)) for level, part in parts))
+        await asyncio.gather(*(guarded(self._aprefetch(level, part, group)) for level, part, group in located))
+
+        # The row groups are parsed here, on the loop's own thread, and only then is the decode
+        # handed out. **That split is not a preference.** A `ParquetFile` and the `StoreFile`
+        # under it hold a seek position, and neither is thread-safe: two threads reading row
+        # groups out of one part do not race to a wrong answer, they segfault. Parsing is cheap
+        # now anyway -- every byte it needs was prefetched above, so it touches memory and no
+        # store at all -- while decoding is the meshopt and numpy work that a thread is for.
+        tables = [self._table_for(members[0]) for members in groups.values()]
+
+        def decode_group(members: list[CellEntry], table: pa.Table) -> list[DecodedCell]:
+            return [self._decode(entry, table) for entry in members]
+
+        results = await asyncio.gather(
+            *(
+                asyncio.to_thread(decode_group, members, table)
+                for members, table in zip(groups.values(), tables)
+            )
+        )
+
+        decoded: dict[tuple[int, int], DecodedCell] = {}
+        for members, cells in zip(groups.values(), results):
+            for entry, cell in zip(members, cells):
+                decoded[(entry.level, entry.cell)] = cell
+        return [decoded[(entry.level, entry.cell)] for entry in entries]
+
+    async def aread_cell(self, level: int, cell: int) -> DecodedCell:
+        """Read one cell without blocking the event loop."""
+        return (await self.aread_cells([(level, cell)]))[0]
+
+    async def _aopen_part(self, level: int, part: int) -> None:
+        """Make sure a part's footer is in hand, fetching it without blocking.
+
+        Guarded by a per-part lock because two overlapping ``aread_cells`` calls would
+        otherwise both see the part as unopened, both fetch its footer, and both store a
+        handle -- leaving ``_parquet_files`` reading through one file while ``_part_files``
+        primes the other, so every prefetch after that lands in the wrong place and is
+        silently wasted. Correct output, quietly no faster, which is the worst kind of bug to
+        have in the thing whose whole purpose is speed.
+        """
+        import pyarrow.parquet as pq
+
+        key = (int(level), int(part))
+        if key in self._parquet_files:
+            return
+        async with self._opening.setdefault(key, asyncio.Lock()):
+            if key in self._parquet_files:
+                return
+            entry = self._part_entry(level, part)
+            path = join(self.prefix, entry.path)
+            if entry.size is None:
+                self._parquet_files[key] = pq.ParquetFile(_buffer(await aget_bytes(self.store, path)))
+                return
+            handle = StoreFile(self.store, path, entry.size)
+            start, length = handle.tail_window()
+            handle.prime_tail(await aget_range_bytes(self.store, path, start, length))
+            self._parquet_files[key] = pq.ParquetFile(handle)
+            self._part_files[key] = handle
+
+    async def _aprefetch(self, level: int, part: int, row_group: int) -> None:
+        """Fetch one row group's byte span and hand it to the file the parse will read."""
+        handle = self._part_files.get((int(level), int(part)))
+        if handle is None:  # the part was opened from a whole-object read; nothing to prefetch
+            return
+        span = _row_group_span(self._parquet_files[(int(level), int(part))].metadata, int(row_group))
+        if span is None:
+            return
+        start, length = span
+        if handle.holds(start, length):
+            # Already covered -- usually because the part is smaller than the footer window and
+            # was pulled whole when it was opened. Re-fetching it here would undo that.
+            return
+        handle.prime(start, await aget_range_bytes(self.store, handle.path, start, length))
+
     # -- planning ---------------------------------------------------------- #
 
     def plan(self, **kwargs: Any) -> list[CellEntry]:  # noqa: ANN401
@@ -546,4 +718,37 @@ def open_collection(store: MailleStore, prefix: str = "") -> Collection:
     return Collection(store, prefix)
 
 
-__all__ = ["CellEntry", "Collection", "DecodedCell", "ObjectEntry", "open_collection"]
+async def aopen_collection(store: MailleStore, prefix: str = "") -> Collection:
+    """Open a collection without blocking the event loop.
+
+    Returns the same :class:`Collection`: only the one small read that opening performs is
+    moved off the loop, because everything after it is already lazy and the async read path
+    hangs off the object itself.
+    """
+    collection = Collection.__new__(Collection)
+    collection.store = store
+    collection.prefix = prefix
+    collection.manifest = Manifest.from_json(await _amanifest_bytes(store, prefix))
+    return collection
+
+
+async def _amanifest_bytes(store: MailleStore, prefix: str) -> bytes:
+    """Fetch ``meshed.json``, naming a missing one as the unfinished write it is."""
+    path = join(prefix, MANIFEST_NAME)
+    try:
+        return await aget_bytes(store, path)
+    except Exception as error:  # a store may raise anything for a missing key
+        raise UnfinishedCollectionError(
+            f"Could not read `{MANIFEST_NAME}` at {path!r} ({error}). A writer lands the manifest last, so an "
+            f"interrupted run leaves exactly this."
+        ) from error
+
+
+__all__ = [
+    "CellEntry",
+    "Collection",
+    "DecodedCell",
+    "ObjectEntry",
+    "aopen_collection",
+    "open_collection",
+]

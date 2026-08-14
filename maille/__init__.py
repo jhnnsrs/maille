@@ -55,10 +55,12 @@ and mesh cells pulls the same regions.
 
 Simplification
 --------------
-A coarse level is made by a pluggable backend. :class:`MeshoptSimplifier` is the default where
-``meshoptimizer`` is installed -- quadric-error, and it never invents a vertex position, which
-is what makes ``boundary: LOCKED`` provable rather than intended. :class:`GreedyEdgeCollapse`
-is the pure-numpy fallback, so the two-dependency core can still build a multi-level tree::
+A coarse level is made by a pluggable backend. :class:`QuadricSimplifier` is the default,
+backed by ``fast-simplification``: it collapses to the quadric-optimal shape while pinning
+every vertex on the cut boundary at exactly its input position, which is what makes
+``boundary: LOCKED`` provable rather than intended. :class:`GreedyEdgeCollapse` is a
+pure-numpy alternative, useful where a heavily pinned boundary stops the quadric collapse
+reaching a budget::
 
     maille.build_collection(objects, cell_size=..., simplifier=maille.GreedyEdgeCollapse())
     maille.build_collection(objects, cell_size=..., decimation=maille.Decimation.half())
@@ -116,16 +118,30 @@ from maille.manifest import (
     level_prefix,
 )
 from maille.planner import Camera, plan_cells
-from maille.reader import CellEntry, Collection, DecodedCell, ObjectEntry, open_collection
+from maille.reader import (
+    CellEntry,
+    Collection,
+    DecodedCell,
+    ObjectEntry,
+    aopen_collection,
+    open_collection,
+)
 from maille.simplify import (
     GreedyEdgeCollapse,
-    MeshoptSimplifier,
+    QuadricSimplifier,
     Simplified,
     Simplifier,
     auto_simplifier,
 )
 from maille.sources import Mesh, MeshSource, coerce_mesh
-from maille.store import DirectoryStore, MailleStore, MemoryStore, RangeReadable, StoreFile
+from maille.store import (
+    AsyncReadable,
+    DirectoryStore,
+    MailleStore,
+    MemoryStore,
+    RangeReadable,
+    StoreFile,
+)
 from maille.writer import awrite_collection, write_collection, write_meshes
 
 __all__ = [
@@ -146,6 +162,7 @@ __all__ = [
     "QUANT_MAX",
     "REQUIRED_COLUMNS",
     "SPEC_VERSION",
+    "AsyncReadable",
     "Camera",
     "CellEntry",
     "Collection",
@@ -164,15 +181,16 @@ __all__ = [
     "Mesh",
     "MeshCollection",
     "MeshSource",
-    "MeshoptSimplifier",
     "MissingExtraError",
     "ObjectEntry",
     "PartitioningError",
+    "QuadricSimplifier",
     "RangeReadable",
     "Simplified",
     "Simplifier",
     "StoreFile",
     "UnfinishedCollectionError",
+    "aopen_collection",
     "arrow_schemas",
     "auto_simplifier",
     "awrite_collection",

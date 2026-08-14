@@ -153,6 +153,25 @@ resolved through the object catalog, and a `max_cells` cap that **degrades detai
 dropping geometry**: running out of budget gives you a coarser cell, never a hole. Every
 `CellEntry` also carries `blob_bytes`, so a plan can be budgeted in bytes before a single fetch.
 
+## Reading without blocking
+
+A frame is forty cells, and forty sequential round trips to an object store is not a frame:
+
+```python
+collection = await maille.aopen_collection(S3Store(...), "my-collection")
+plan = collection.plan(camera=camera)
+cells = await collection.aread_cells([(e.level, e.cell) for e in plan], concurrency=16)
+```
+
+The work arrives in two waves, because the second cannot be known without the first: the
+footers of every part the plan touches, then the byte span of every row group it needs — each
+wave issued at once. Only then is anything parsed, and the decode goes to a worker thread.
+
+pyarrow's reader is synchronous and maille does not pretend otherwise; what is asynchronous is
+the part that is actually I/O. A store carrying `get_async` / `get_range_async` (obstore does)
+has them used directly; one without them has its sync methods run in a thread, which for a
+network round trip overlaps just as well.
+
 ## Stores
 
 maille asks a store for three methods — `put(path, data)`, `get(path)`, `list(prefix)` — and
