@@ -12,7 +12,14 @@ from pathlib import Path
 import pytest
 
 import maille
-from maille.store import DirectoryStore, MailleStore, get_bytes, join, list_paths, validate_relative
+from maille.stores import (
+    DirectoryStore,
+    MailleStore,
+    get_bytes,
+    join,
+    list_paths,
+    validate_relative,
+)
 
 
 def test_obstore_satisfies_the_protocol_with_no_adapter():
@@ -53,7 +60,7 @@ def test_the_same_tree_lands_in_every_kind_of_store(collection: maille.MeshColle
         "collection/level=0/part-00000.parquet",
         "collection/level=1/part-00000.parquet",
         "collection/level=2/part-00000.parquet",
-        "collection/meshed.json",
+        "collection/maille.json",
     ]
 
     opened = maille.open_collection(store, "collection")  # type: ignore[arg-type]
@@ -65,7 +72,7 @@ def test_a_directory_store_writes_the_tree_a_shell_can_see(collection: maille.Me
     """The layout is meant to be legible on disk, not only through an API."""
     maille.write_collection(collection, DirectoryStore(tmp_path), "c")
 
-    assert (tmp_path / "c" / "meshed.json").is_file()
+    assert (tmp_path / "c" / "maille.json").is_file()
     assert (tmp_path / "c" / "catalog" / "cells.parquet").is_file()
     assert (tmp_path / "c" / "level=1" / "part-00000.parquet").is_file()
 

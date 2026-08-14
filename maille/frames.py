@@ -2,7 +2,7 @@
 
 Nothing that reads a collection renders these files itself: a server checks the columns and
 the declarations and never opens a blob. So the column layer is the contract, and everything
-below it is defined by :mod:`maille.codec` and nowhere else.
+below it is defined by :mod:`maille.codecs` and nowhere else.
 
 Extra columns are allowed on purpose -- a writer may carry a denormalized attribute copy
 alongside -- so a check tests that the required columns are present, never that no others are.
@@ -144,10 +144,11 @@ def _column_names(table: Any) -> Iterable[str]:  # noqa: ANN401
 def table_to_parquet(table: Any, *, compression: str = "zstd") -> bytes:  # noqa: ANN401
     """Serialize an Arrow table to Parquet bytes.
 
-    The Parquet-level compression is the *file's*, not the format's: ``encoding.compression``
-    describes the geometry blobs inside a row, and those are already meshopt-coded and left
-    alone here. Compressing the file around them still pays on the catalogs, which are plain
-    numeric columns.
+    The Parquet-level compression is the *file's*, and is a separate thing from the format's:
+    ``encoding.compression`` describes each geometry blob *inside* a row, and defaults to
+    ``NONE``. So this is what actually compresses the raw blobs on disk -- and it does it
+    better than per-blob framing would, having a whole column chunk of context rather than one
+    cell's worth. It pays on the catalogs too, which are plain numeric columns.
     """
     pa = require_pyarrow()
     import pyarrow.parquet as pq  # type: ignore

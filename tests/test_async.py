@@ -18,6 +18,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import trimesh
 
 import maille
 from tests.conftest import AXES, CELL_SIZE, LEVELS
@@ -64,7 +65,6 @@ class ConcurrentStore(maille.MemoryStore):
 @pytest.fixture(scope="session")
 def many_objects() -> dict[int, Any]:
     """Enough objects, spread far enough apart, to fill several cells and several row groups."""
-    trimesh = pytest.importorskip("trimesh")
     return {
         1000 + index * 7: trimesh.creation.icosphere(radius=30.0, subdivisions=3).apply_translation(
             [60.0 + index * 70.0, 80.0, 60.0]
@@ -102,7 +102,7 @@ def test_opening_a_collection_without_blocking_reads_the_same_manifest(served: C
 
 def test_opening_an_interrupted_write_is_refused_asynchronously_too(served: ConcurrentStore):
     """The completion protocol is a property of the tree, not of which reader looked at it."""
-    del served.objects["c/meshed.json"]
+    del served.objects["c/maille.json"]
 
     with pytest.raises(maille.UnfinishedCollectionError, match="manifest last"):
         asyncio.run(maille.aopen_collection(served, "c"))

@@ -4,7 +4,7 @@ Three runnable scripts, in order. Each one prints what it did, so reading the ou
 of the point.
 
 ```bash
-uv sync --all-extras
+uv sync
 uv run python examples/01_trimesh_to_maille.py
 uv run python examples/02_maille_to_trimesh.py
 uv run python examples/03_level_of_detail.py
@@ -19,13 +19,17 @@ whenever you like — examples 2 and 3 rebuild the collection if it is not there
 | [`02_maille_to_trimesh.py`](02_maille_to_trimesh.py) | A collection → `trimesh.Trimesh` objects. One object reassembled across its cells, one object sliced out of a shared cell, and a whole level exported as OBJ. Measures the round-trip error. |
 | [`03_level_of_detail.py`](03_level_of_detail.py) | The point of the format: spending an error budget in voxels or in pixels, what each plan actually costs to fetch, mixed-level plans from a camera inside the scene, fetching one object alone, and what the two simplification backends cost against each other. |
 
-[`common.py`](common.py) holds the demo scene the three share — a segmentation-shaped set of
-32 objects spread along `x`, keyed by sparse instance ids the way a label image would key them.
+Each script stands on its own: no shared module, nothing to read first. That means each one
+carries its own copy of the demo scene — a segmentation-shaped set of 32 objects spread along
+`x`, keyed by sparse instance ids the way a label image would key them — so you can lift a
+single file out of here and run it anywhere maille is installed.
 
 ## What the output looks like
 
-Both excerpts are from the bundled scene, unchanged — run the scripts and you should see these
-exact numbers.
+Both excerpts are from the bundled scene, unchanged, with every default in place — run the
+scripts and you should see these exact numbers. The byte column moves with `codec` and
+`compression`; the face and level columns move with the simplifier and the decimation
+schedule, which is rather the point of example 3's last section.
 
 Example 2, reading one object back:
 
@@ -39,10 +43,10 @@ Example 3, the LOD trade — a camera pulling back, accepting 8 pixels of error:
 
 ```
  distance   cells     faces      bytes   of full  levels
-      143      71     24170    175,554      75%  L0x60, L1x11
-     1428      57     18900    141,414      60%  L0x39, L1x18
-     2857      31     10408     70,929      30%  L0x13, L1x16, L2x2
-     5713       6      2078     11,681       5%  L2x6
+      143      83     30686    511,098      97%  L0x77, L1x6
+     1428      66     21436    357,954      68%  L0x52, L1x14
+     2857      41     13568    222,960      42%  L0x26, L1x13, L2x2
+     5714       6      2420     37,356       7%  L2x6
 ```
 
 Every one of those decisions comes out of `catalog/cells.parquet` alone — one small file, one

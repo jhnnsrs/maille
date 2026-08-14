@@ -8,7 +8,7 @@ completion protocol, and it is why this module exists rather than a loop at the 
 a caller who writes the manifest first has built something that registers cleanly and fails
 later, on a reader, with no way to tell an interrupted write from a corrupt one.
 
-The same tree lands on a local directory and in an S3 prefix; see :mod:`maille.store`.
+The same tree lands on a local directory and in an S3 prefix; see :mod:`maille.stores`.
 """
 
 from __future__ import annotations
@@ -36,9 +36,9 @@ from maille.manifest import (
     Manifest,
     level_part_path,
 )
-from maille.simplify import Simplifier
+from maille.simplifiers import Simplifier
 from maille.sources import MeshSource
-from maille.store import MailleStore, join, put_bytes
+from maille.stores import MailleStore, join, put_bytes
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import pyarrow as pa
@@ -187,7 +187,8 @@ def write_meshes(
     cell_size: Sequence[int] | None = None,
     levels: int = 3,
     codec: str | None = None,
-    simplifier: Simplifier | None = None,
+    compression: str | None = None,
+    simplifier: Simplifier | str | None = None,
     decimation: Decimation | None = None,
     max_part_bytes: int = DEFAULT_MAX_PART_BYTES,
     row_group_bytes: int = DEFAULT_ROW_GROUP_BYTES,
@@ -199,14 +200,15 @@ def write_meshes(
     frames before spending the writes. ``simplifier`` and ``decimation`` are how the coarse
     levels are made; see :func:`maille.build_collection`.
     """
-    from maille.manifest import CODEC_MESHOPT
+    from maille.manifest import CODEC_NONE, COMPRESSION_NONE
 
     collection = build_collection(
         objects,
         axes=axes,
         cell_size=cell_size,
         levels=levels,
-        codec=codec or CODEC_MESHOPT,
+        codec=codec or CODEC_NONE,
+        compression=compression or COMPRESSION_NONE,
         simplifier=simplifier,
         decimation=decimation,
     )

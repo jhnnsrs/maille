@@ -12,8 +12,8 @@ import maille
 
 #: Submodules are importable and not part of the surface `__all__` describes.
 _SUBMODULES = {
-    "build", "codec", "errors", "frames", "geometry", "manifest",
-    "planner", "reader", "simplify", "sources", "store", "writer",
+    "build", "codecs", "errors", "frames", "geometry", "manifest", "octree",
+    "planner", "reader", "simplifiers", "sources", "stores", "writer",
 }
 
 

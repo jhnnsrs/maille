@@ -20,6 +20,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import trimesh
 
 import maille
 from tests.conftest import AXES, CELL_SIZE, LEVELS, AccountingStore
@@ -27,7 +28,10 @@ from tests.conftest import AXES, CELL_SIZE, LEVELS, AccountingStore
 #: Small enough that the fixture's level 0 lands in several row groups. The default is sized
 #: for real collections, and a fixture big enough to split at the default would make the suite
 #: slow to prove a point that the budget itself is what varies.
-ROW_GROUP_BYTES = 16 * 1024
+# Sized against the fixture rather than round: a cell's blobs are ~20 KiB raw (the
+# format's default is `codec: NONE`), so a budget below that would put every cell in a
+# row group of its own and there would be no sharing left to test.
+ROW_GROUP_BYTES = 64 * 1024
 
 
 @pytest.fixture(scope="session")
@@ -42,7 +46,6 @@ def wide_objects() -> dict[int, Any]:
     So these objects exist to put the part above that window, which is where a real collection
     lives and where row-group granularity is the thing actually being measured.
     """
-    trimesh = pytest.importorskip("trimesh")
     return {
         1000 + index * 7: trimesh.creation.icosphere(radius=30.0, subdivisions=3).apply_translation(
             [60.0 + index * 70.0, 80.0, 60.0]
@@ -287,14 +290,14 @@ def test_a_collection_whose_manifest_records_no_length_still_reads(collection: m
     store = maille.MemoryStore()
     maille.write_collection(collection, store, "c")
 
-    manifest = json.loads(store.objects["c/meshed.json"])
+    manifest = json.loads(store.objects["c/maille.json"])
     manifest["files"]["levels"] = {
         level: [entry["path"] for entry in entries]
         for level, entries in manifest["files"]["levels"].items()
     }
     manifest["files"]["cells"] = manifest["files"]["cells"]["path"]
     manifest["files"]["objects"] = manifest["files"]["objects"]["path"]
-    store.objects["c/meshed.json"] = json.dumps(manifest).encode()
+    store.objects["c/maille.json"] = json.dumps(manifest).encode()
 
     opened = maille.open_collection(store, "c")
     entry = a_level_zero_cell(opened)

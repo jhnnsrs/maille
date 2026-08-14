@@ -21,10 +21,59 @@ Run it (after example 1, or it will write the collection itself)::
 
 from __future__ import annotations
 
+import math
+from pathlib import Path
+
 import numpy as np
-from common import ensure_collection, rule
+import trimesh
 
 import maille
+
+#: Where example 1 wrote, and where this one reads from.
+OUTPUT = Path(__file__).parent / "out"
+COLLECTION = "segmentation"
+CELL_SIZE = (128, 128, 64)
+LEVELS = 3
+
+
+def demo_objects(count: int = 32) -> dict[int, trimesh.Trimesh]:
+    """The same scene example 1 wrote: ``{instance_id: trimesh.Trimesh}``, in voxel coordinates.
+
+    A segmentation-shaped set of small objects, spread along **x** on purpose -- that is what
+    lets a single camera see some of them close up and others far away, which is what section 3
+    is about.
+    """
+    objects: dict[int, trimesh.Trimesh] = {}
+    for index in range(count):
+        x = 120.0 + index * 90.0
+        y = 260.0 + 120.0 * math.sin(index * 0.7)
+        z = 130.0 + 60.0 * math.cos(index * 0.5)
+
+        instance_id = 1000 + index * 7
+        if index % 3 == 0:
+            body = trimesh.creation.icosphere(radius=26.0, subdivisions=3)
+        elif index % 3 == 1:
+            body = trimesh.creation.box(extents=[46.0, 30.0, 22.0])
+        else:
+            body = trimesh.creation.capsule(radius=14.0, height=40.0, count=[24, 24])
+        objects[instance_id] = body.apply_translation([x, y, z])
+
+    return objects
+
+
+def ensure_collection() -> maille.Collection:
+    """Write the demo collection if example 1 has not been run yet, and open it either way."""
+    store = maille.DirectoryStore(OUTPUT, create=True)
+    if not (OUTPUT / COLLECTION / "maille.json").is_file():
+        print(f"No collection at {OUTPUT / COLLECTION}, writing one first...")
+        maille.write_meshes(demo_objects(), store, prefix=COLLECTION, cell_size=CELL_SIZE, levels=LEVELS)
+
+    return maille.open_collection(store, COLLECTION)
+
+
+def rule(title: str) -> None:
+    """Print a section heading, so a long run stays readable."""
+    print(f"\n{title}\n{'-' * len(title)}")
 
 
 def blob_bytes(collection: maille.Collection) -> dict[tuple[int, int], int]:
@@ -206,33 +255,35 @@ def compare_backends() -> None:
     """
     import warnings
 
-    from common import CELL_SIZE, LEVELS, demo_objects
-
     rule("6. The two simplifiers, on the same objects")
     objects = demo_objects()
 
     print(f"{'backend':>22}  {'faces per level':>28}  {'worst lod_error':>16}")
-    for simplifier in (maille.MeshoptSimplifier(), maille.GreedyEdgeCollapse()):
+    # `simplifier` takes a name out of a vocabulary, the way `codec` does. Pass an instance
+    # instead -- GreedyEdgeCollapse(placement="onto_fixed") -- to adjust one's own settings.
+    for name in (maille.SIMPLIFICATION_QUADRIC, maille.SIMPLIFICATION_GREEDY):
         with warnings.catch_warnings():
             warnings.simplefilter("ignore")
             built = maille.build_collection(
-                objects, cell_size=CELL_SIZE, levels=LEVELS, simplifier=simplifier
+                objects, cell_size=CELL_SIZE, levels=LEVELS, simplifier=name
             )
         faces = [sum(shard.column("index_count").to_pylist()) // 3 for _, shard in built.shards]
         worst = max(built.cell_catalog.column("lod_error").to_pylist())
-        print(f"{simplifier.name:>22}  {faces!s:>28}  {worst:>16.3f}")
+        print(f"{name:>22}  {faces!s:>28}  {worst:>16.3f}")
 
     print(
         "\nRead that error column carefully: the two are NOT at equal face counts, so part of\n"
-        "the gap is simply more geometry. Held to the same target on the same mesh, meshopt\n"
-        "still reports the lower deviation by a wide margin -- that comparison is a unit test\n"
-        "(`test_meshopt_reports_a_far_tighter_error_than_the_fallback`) rather than a table\n"
-        "here, because controlling for it needs one call rather than a whole build.\n"
-        "\nmeshopt is the default wherever it is installed. Pick the greedy collapse when a\n"
-        "heavily pinned boundary stops meshopt reaching the budget -- it will collapse an edge\n"
-        "onto a locked vertex, where meshopt leaves the locked region alone -- and accept that\n"
-        "its error column is a much looser bound.\n"
+        "the gap is simply more geometry. Held to the same target on the same mesh, the quadric\n"
+        "collapse still reports the lower deviation by a wide margin -- that comparison is a\n"
+        "unit test rather than a table here, because controlling for it needs one call rather\n"
+        "than a whole build.\n"
+        "\nThe quadric collapse is the default. Pick the greedy one when the face budget\n"
+        "matters more than the shape: `preserve_border` pins the level-0 seams interior to a\n"
+        "coarse cell along with the cut curve that actually matters, so on heavily cut objects\n"
+        "it stops well short -- while the greedy collapse pins only this level's cell planes.\n"
+        "The price is a much looser error column.\n"
         "\n"
+        "    maille.build_collection(objects, ..., simplifier='GREEDY')\n"
         "    maille.build_collection(objects, ..., simplifier=maille.GreedyEdgeCollapse())\n"
         "    maille.build_collection(objects, ..., decimation=maille.Decimation.half())"
     )

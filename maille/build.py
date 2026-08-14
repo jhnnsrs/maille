@@ -31,15 +31,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from maille.codec import (
-    MAX_ORDINAL,
-    QUANT_MAX,
-    cell_box,
-    encode_indices,
-    encode_positions,
-    morton_decode,
-    morton_encode_one,
-)
+from maille.codecs import QUANT_MAX, encode_indices, encode_positions
 from maille.errors import FormatError
 from maille.frames import arrow_schemas, build_table
 from maille.geometry import (
@@ -53,6 +45,8 @@ from maille.manifest import (
     CELL_CATALOG_PATH,
     CODEC_MESHOPT,
     CODEC_NONE,
+    COMPRESSION_NONE,
+    MAX_ORDINAL,
     OBJECT_CATALOG_PATH,
     Decimation,
     Encoding,
@@ -61,7 +55,8 @@ from maille.manifest import (
     level_part_path,
     validate_axes,
 )
-from maille.simplify import Simplifier, resolve_simplifier, simplify_to_target
+from maille.octree import cell_box, morton_decode, morton_encode_one
+from maille.simplifiers import Simplifier, resolve_simplifier, simplify_to_target
 from maille.sources import MeshSource, coerce_objects
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -165,8 +160,9 @@ def build_collection(
     axes: Sequence[str] | None = None,
     cell_size: Sequence[int] | None = None,
     levels: int = 3,
-    codec: str = CODEC_MESHOPT,
-    simplifier: Simplifier | None = None,
+    codec: str = CODEC_NONE,
+    compression: str = COMPRESSION_NONE,
+    simplifier: Simplifier | str | None = None,
     decimation: Decimation | None = None,
 ) -> MeshCollection:
     """Turn ``{object_id: mesh}`` into a collection's three frames and its manifest.
@@ -189,9 +185,11 @@ def build_collection(
     reveal. ``levels`` is how deep the octree goes; every level from 0 to ``levels - 1`` gets a
     file, because a gap is geometry a planner never asks for.
 
-    ``simplifier`` is how a coarse level is made; left unset it is
-    :func:`maille.auto_simplifier`, which picks meshoptimizer where it is installed and a pure
-    numpy edge collapse where it is not. ``decimation`` is how much survives each level,
+    ``simplifier`` is how a coarse level is made, and like ``codec`` it is a name out of a small
+    vocabulary: ``"QUADRIC"`` (the default -- quadric-optimal shapes with the boundary pinned) or
+    ``"GREEDY"``. Pass an instance instead -- ``maille.GreedyEdgeCollapse(placement="onto_fixed")``
+    -- to adjust a backend's own settings, or your own object providing ``simplify``. See
+    :mod:`maille.simplifiers`. ``decimation`` is how much survives each level,
     defaulting to :meth:`maille.Decimation.quarter` -- and whatever it is, the manifest declares
     what was actually done rather than the format's default name.
     """
@@ -200,14 +198,13 @@ def build_collection(
     backend = resolve_simplifier(simplifier)
     schedule = decimation or Decimation.quarter()
 
-    if codec not in (CODEC_MESHOPT, CODEC_NONE):
-        raise FormatError(
-            f"`codec` is {codec!r}; the format defines {CODEC_MESHOPT} and {CODEC_NONE}."
-        )
+    # Validated here rather than at the first blob, so a bad pair costs nothing instead of
+    # costing the whole clipping pass -- and the same for a missing optional codec.
+    Encoding(codec=codec, compression=compression)
     if codec == CODEC_MESHOPT:
-        from maille.codec import require_meshoptimizer
+        from maille.codecs import require_meshoptimizer
 
-        require_meshoptimizer()  # fail before the expensive clipping, not after it
+        require_meshoptimizer()
     if levels < 1:
         raise FormatError(f"An octree has at least one level, got {levels}.")
     if len(objects) > MAX_ORDINAL:
@@ -399,9 +396,14 @@ def build_collection(
                     "level": level,
                     "cell": cell,
                     "positions": encode_positions(
-                        vertices, cell=cell, level=level, cell_size=grid.cell_size, codec=codec
+                        vertices,
+                        cell=cell,
+                        level=level,
+                        cell_size=grid.cell_size,
+                        codec=codec,
+                        compression=compression,
                     ),
-                    "indices": encode_indices(faces, codec=codec, vertex_count=len(vertices)),
+                    "indices": encode_indices(faces, codec=codec, compression=compression),
                     "vertex_count": len(vertices),
                     "index_count": len(faces) * 3,
                     "object_ids": ids,
@@ -461,7 +463,7 @@ def build_collection(
 
     manifest = Manifest(
         grid=grid,
-        encoding=Encoding(codec=codec, decimation=schedule.declaration),
+        encoding=Encoding(codec=codec, compression=compression, decimation=schedule.declaration),
         axes=declared_axes,
         counts={
             "objects": len(object_ids),

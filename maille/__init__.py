@@ -4,7 +4,7 @@ A mesh collection is an **octree of surfaces** written as one self-describing tr
 renderer can fetch the detail it needs for the view it has instead of the whole thing::
 
     <prefix>/
-      meshed.json                    <- the manifest, written LAST
+      maille.json                    <- the manifest, written LAST
       catalog/cells.parquet          <- the spatial index, one row per (level, cell)
       catalog/objects.parquet        <- the identity index, one row per object
       level=0/part-00000.parquet     <- the geometry, finest level
@@ -55,35 +55,38 @@ and mesh cells pulls the same regions.
 
 Simplification
 --------------
-A coarse level is made by a pluggable backend. :class:`QuadricSimplifier` is the default,
-backed by ``fast-simplification``: it collapses to the quadric-optimal shape while pinning
-every vertex on the cut boundary at exactly its input position, which is what makes
-``boundary: LOCKED`` provable rather than intended. :class:`GreedyEdgeCollapse` is a
-pure-numpy alternative, useful where a heavily pinned boundary stops the quadric collapse
-reaching a budget::
+A coarse level is made by a pluggable backend, named the way a codec is: ``"QUADRIC"`` is the
+default, backed by ``fast-simplification`` -- it collapses to the quadric-optimal shape while
+pinning every vertex on the cut boundary at exactly its input position, which is what makes
+``boundary: LOCKED`` provable rather than intended. ``"GREEDY"`` is a pure-numpy alternative,
+useful where a heavily pinned boundary stops the quadric collapse reaching a budget::
 
+    maille.build_collection(objects, cell_size=..., simplifier="GREEDY")
     maille.build_collection(objects, cell_size=..., simplifier=maille.GreedyEdgeCollapse())
     maille.build_collection(objects, cell_size=..., decimation=maille.Decimation.half())
+
+Pass the name to pick a backend, an instance to configure one, or your own object providing
+``simplify`` -- see :mod:`maille.simplifiers`.
 
 How much survives each level is :class:`Decimation`, defaulting to a quarter. Whatever it is,
 the manifest declares what was actually done: a ratio and its declaration are required to
 agree, because nothing downstream can re-derive one from the other.
 
-The byte format is documented in :mod:`maille.codec`; the boundary and decimation arguments in
+The byte format is documented in :mod:`maille.codecs`; the boundary and decimation arguments in
 :mod:`maille.geometry`; the tree layout in :mod:`maille.manifest`.
 """
 
 from maille.build import MeshCollection, build_collection, choose_cell_size
-from maille.codec import (
+from maille.codecs import (
     QUANT_MAX,
-    cell_box,
+    BlobCodec,
+    MeshoptCodec,
+    RawCodec,
+    codec_for,
     decode_indices,
     decode_positions,
     encode_indices,
     encode_positions,
-    morton_decode,
-    morton_encode,
-    morton_encode_one,
 )
 from maille.errors import (
     FormatError,
@@ -100,6 +103,7 @@ from maille.manifest import (
     CODEC_MESHOPT,
     CODEC_NONE,
     COMPRESSION_NONE,
+    COMPRESSION_ZSTD,
     DECIMATION_CUSTOM,
     DECIMATION_EIGHTH,
     DECIMATION_HALF,
@@ -117,6 +121,7 @@ from maille.manifest import (
     level_part_path,
     level_prefix,
 )
+from maille.octree import cell_box, morton_decode, morton_encode, morton_encode_one
 from maille.planner import Camera, plan_cells
 from maille.reader import (
     CellEntry,
@@ -126,15 +131,18 @@ from maille.reader import (
     aopen_collection,
     open_collection,
 )
-from maille.simplify import (
+from maille.simplifiers import (
+    SIMPLIFICATION_DEFAULT,
+    SIMPLIFICATION_GREEDY,
+    SIMPLIFICATION_QUADRIC,
     GreedyEdgeCollapse,
     QuadricSimplifier,
     Simplified,
     Simplifier,
-    auto_simplifier,
+    simplifier_for,
 )
 from maille.sources import Mesh, MeshSource, coerce_mesh
-from maille.store import (
+from maille.stores import (
     AsyncReadable,
     DirectoryStore,
     MailleStore,
@@ -151,6 +159,7 @@ __all__ = [
     "CODEC_MESHOPT",
     "CODEC_NONE",
     "COMPRESSION_NONE",
+    "COMPRESSION_ZSTD",
     "DECIMATION_CUSTOM",
     "DECIMATION_EIGHTH",
     "DECIMATION_HALF",
@@ -162,8 +171,12 @@ __all__ = [
     "POSITIONS_UINT16_QUANTIZED_PER_CELL",
     "QUANT_MAX",
     "REQUIRED_COLUMNS",
+    "SIMPLIFICATION_DEFAULT",
+    "SIMPLIFICATION_GREEDY",
+    "SIMPLIFICATION_QUADRIC",
     "SPEC_VERSION",
     "AsyncReadable",
+    "BlobCodec",
     "Camera",
     "CellEntry",
     "Check",
@@ -183,11 +196,13 @@ __all__ = [
     "Mesh",
     "MeshCollection",
     "MeshSource",
+    "MeshoptCodec",
     "MissingExtraError",
     "ObjectEntry",
     "PartitioningError",
     "QuadricSimplifier",
     "RangeReadable",
+    "RawCodec",
     "Simplified",
     "Simplifier",
     "StoreFile",
@@ -195,11 +210,11 @@ __all__ = [
     "VerifyReport",
     "aopen_collection",
     "arrow_schemas",
-    "auto_simplifier",
     "awrite_collection",
     "build_collection",
     "cell_box",
     "choose_cell_size",
+    "codec_for",
     "coerce_mesh",
     "decimate_fixed",
     "decode_indices",
@@ -213,6 +228,7 @@ __all__ = [
     "morton_encode_one",
     "open_collection",
     "plan_cells",
+    "simplifier_for",
     "snap_boundary",
     "validate_columns",
     "verify",

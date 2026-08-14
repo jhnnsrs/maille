@@ -7,9 +7,10 @@ import json
 from pathlib import Path
 
 import pytest
+import trimesh
 
 import maille
-from maille.store import DirectoryStore
+from maille.stores import DirectoryStore
 from tests.conftest import AXES, CELL_SIZE
 
 
@@ -39,7 +40,7 @@ def test_the_manifest_is_written_last(collection: maille.MeshCollection):
 
     maille.write_collection(collection, store, "c")
 
-    assert store.order[-1] == "c/meshed.json"
+    assert store.order[-1] == "c/maille.json"
     assert len(store.order) == len(set(store.order)), "nothing was written twice"
 
 
@@ -49,7 +50,7 @@ def test_everything_the_manifest_names_exists_before_the_manifest_does(collectio
 
     maille.write_collection(collection, store, "c")
 
-    files = json.loads(store.objects["c/meshed.json"])["files"]
+    files = json.loads(store.objects["c/maille.json"])["files"]
     named = [files["cells"]["path"], files["objects"]["path"]]
     named += [entry["path"] for entries in files["levels"].values() for entry in entries]
 
@@ -62,7 +63,7 @@ def test_an_interrupted_write_leaves_a_prefix_that_is_refused(collection: maille
     """Precisely the shape a killed writer leaves, and it must not read as a collection."""
     store = maille.MemoryStore()
     maille.write_collection(collection, store, "c")
-    del store.objects["c/meshed.json"]  # the last write never happened
+    del store.objects["c/maille.json"]  # the last write never happened
 
     with pytest.raises(maille.UnfinishedCollectionError, match="manifest last"):
         maille.open_collection(store, "c")
@@ -146,7 +147,6 @@ def test_the_declared_index_width_is_the_one_the_blobs_use():
     A collection whose declaration and blobs disagreed would decode to garbage with nothing
     raised anywhere.
     """
-    trimesh = pytest.importorskip("trimesh")
     objects = {1: trimesh.creation.icosphere(radius=20.0).apply_translation([64.0, 64.0, 32.0])}
 
     raw = maille.build_collection(
@@ -177,7 +177,7 @@ def test_write_meshes_builds_and_writes_in_one_call(objects: dict, tmp_path: Pat
 
     assert manifest.spec_version == maille.SPEC_VERSION
     assert manifest.grid.levels == 2
-    assert (tmp_path / "c" / "meshed.json").is_file()
+    assert (tmp_path / "c" / "maille.json").is_file()
 
 
 def test_the_async_writer_produces_the_same_tree(collection: maille.MeshCollection):
@@ -189,7 +189,7 @@ def test_the_async_writer_produces_the_same_tree(collection: maille.MeshCollecti
     asyncio.run(maille.awrite_collection(collection, asynchronous, "c"))
 
     assert synchronous.objects.keys() == asynchronous.objects.keys()
-    assert synchronous.objects["c/meshed.json"] == asynchronous.objects["c/meshed.json"]
+    assert synchronous.objects["c/maille.json"] == asynchronous.objects["c/maille.json"]
 
 
 def test_writing_twice_replaces_rather_than_accumulates(collection: maille.MeshCollection):

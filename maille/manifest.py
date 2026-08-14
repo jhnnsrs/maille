@@ -1,11 +1,11 @@
 """The layout of a collection's tree, and the manifest that describes it.
 
-A meshed store is **self-describing**, which is the whole reason it is one store rather than a
+A collection is **self-describing**, which is the whole reason it is one store rather than a
 handful. Everything a reader needs to turn a Morton code into a box and a blob into geometry
-travels next to the geometry, in ``meshed.json`` at the root of the prefix::
+travels next to the geometry, in ``maille.json`` at the root of the prefix::
 
     <prefix>/
-      meshed.json                    <- the manifest, written LAST
+      maille.json                    <- the manifest, written LAST
       catalog/cells.parquet          <- the spatial index, one row per (level, cell)
       catalog/objects.parquet        <- the identity index, one row per object
       level=0/part-00000.parquet     <- the geometry, finest level
@@ -54,11 +54,14 @@ from maille.errors import FormatError
 SPEC_VERSION = "4"
 
 #: The manifest's name, at the root of the collection's prefix.
-MANIFEST_NAME = "meshed.json"
+MANIFEST_NAME = "maille.json"
 
 #: The two catalogs, at paths the format fixes.
 CELL_CATALOG_PATH = "catalog/cells.parquet"
 OBJECT_CATALOG_PATH = "catalog/objects.parquet"
+
+#: A dense ordinal is 24 bits in the format, so a collection holds at most this many objects.
+MAX_ORDINAL = 1 << 24
 
 
 def level_prefix(level: int) -> str:
@@ -86,10 +89,13 @@ POSITIONS_UINT16_QUANTIZED_PER_CELL = "UINT16_QUANTIZED_PER_CELL"
 INDICES_UINT32 = "UINT32"
 INDICES_UINT16 = "UINT16"
 
-#: The blob codec. ``MESHOPT`` is what glTF's ``EXT_meshopt_compression`` uses, so a web
-#: renderer already ships the decoder.
-CODEC_MESHOPT = "MESHOPT"
+#: The blob codec. ``NONE`` is the default and the one that needs nothing installed: a blob is
+#: the raw little-endian layout :mod:`maille.codecs` describes, which a consumer hands straight
+#: to a vertex buffer. ``MESHOPT`` is what glTF's ``EXT_meshopt_compression`` uses -- roughly
+#: half the payload, at the cost of a decoder on the reading side and the `meshopt` extra on
+#: the writing side.
 CODEC_NONE = "NONE"
+CODEC_MESHOPT = "MESHOPT"
 
 COMPRESSION_NONE = "NONE"
 COMPRESSION_ZSTD = "ZSTD"
@@ -112,7 +118,7 @@ SORT_KEY_MORTON = "MORTON"
 _ENCODING_VOCABULARY: dict[str, frozenset[str]] = {
     "positions": frozenset({POSITIONS_UINT16_QUANTIZED_PER_CELL}),
     "indices": frozenset({INDICES_UINT32, INDICES_UINT16}),
-    "codec": frozenset({CODEC_MESHOPT, CODEC_NONE}),
+    "codec": frozenset({CODEC_NONE, CODEC_MESHOPT}),
     "compression": frozenset({COMPRESSION_NONE, COMPRESSION_ZSTD}),
     "boundary": frozenset({BOUNDARY_LOCKED, BOUNDARY_OPEN}),
     "decimation": frozenset({DECIMATION_QUARTER, DECIMATION_HALF, DECIMATION_EIGHTH, DECIMATION_CUSTOM}),
@@ -324,13 +330,24 @@ class Encoding:
 
     positions: str = POSITIONS_UINT16_QUANTIZED_PER_CELL
     indices: str = INDICES_UINT32
-    codec: str = CODEC_MESHOPT
+    codec: str = CODEC_NONE
     compression: str = COMPRESSION_NONE
     boundary: str = BOUNDARY_LOCKED
     decimation: str = DECIMATION_QUARTER
 
     def __post_init__(self) -> None:
-        """Refuse a value outside the format's vocabulary."""
+        """Refuse a value outside the format's vocabulary, or a pair that cannot be decoded."""
+        # ZSTD framing carries no content size, so the uncompressed length has to come from the
+        # row -- 6 bytes a vertex, 4 bytes an index. A MESHOPT blob has no such relation to its
+        # counts, so the combination is undecodable rather than merely redundant. (It would be
+        # redundant too: meshopt already entropy-codes.)
+        if self.codec == CODEC_MESHOPT and self.compression == COMPRESSION_ZSTD:
+            raise FormatError(
+                f"`codec: {CODEC_MESHOPT}` with `compression: {COMPRESSION_ZSTD}` cannot be decoded: the "
+                f"format derives a compressed blob's length from the row's vertex and index counts, and a "
+                f"meshopt blob has no fixed size per element. meshopt already entropy-codes, so pair it with "
+                f"`compression: {COMPRESSION_NONE}`."
+            )
         for key in _REQUIRED_ENCODING_KEYS:
             value = getattr(self, key)
             allowed = _ENCODING_VOCABULARY[key]
@@ -362,7 +379,7 @@ class Encoding:
 
 @dataclass(frozen=True)
 class Manifest:
-    """``meshed.json``: what a reader learns before opening a single Parquet file."""
+    """``maille.json``: what a reader learns before opening a single Parquet file."""
 
     grid: Grid
     encoding: Encoding
@@ -500,6 +517,7 @@ __all__ = [
     "INDICES_UINT16",
     "INDICES_UINT32",
     "MANIFEST_NAME",
+    "MAX_ORDINAL",
     "OBJECT_CATALOG_PATH",
     "POSITIONS_UINT16_QUANTIZED_PER_CELL",
     "SORT_KEY_MORTON",

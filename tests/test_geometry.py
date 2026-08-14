@@ -8,10 +8,12 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import trimesh
 
 import maille
-from maille.codec import QUANT_MAX, morton_encode_one
+from maille.codecs import QUANT_MAX
 from maille.geometry import decimate_fixed, on_planes, snap_boundary
+from maille.octree import morton_encode_one
 
 CELL_SIZE = np.array([128, 128, 64], dtype=np.int64)
 LEVELS = 3
@@ -109,7 +111,6 @@ def test_decimation_never_moves_a_fixed_vertex():
 
 def test_decimation_reaches_its_target_when_nothing_is_pinned():
     """``QUARTER`` is a face-count ratio, so hitting the count is the whole obligation."""
-    trimesh = pytest.importorskip("trimesh")
     sphere = trimesh.creation.icosphere(subdivisions=3)
     vertices = np.asarray(sphere.vertices, dtype=np.float64)
     faces = np.asarray(sphere.faces, dtype=np.int64)
@@ -128,7 +129,6 @@ def test_a_small_object_is_not_decimated_out_of_existence():
     The failure this guards is silent in the worst way: a level that lost a row looks exactly
     like a level that never had one, so the object simply disappears when a viewer zooms out.
     """
-    trimesh = pytest.importorskip("trimesh")
     tiny = trimesh.creation.box(extents=[6.0, 4.0, 3.0]).apply_translation([40.0, 40.0, 20.0])
 
     collection = maille.build_collection({5: tiny}, axes=("z", "y", "x"), cell_size=(128, 128, 64), levels=3)

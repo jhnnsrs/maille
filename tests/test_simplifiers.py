@@ -14,7 +14,6 @@ import trimesh
 
 import maille
 from maille.geometry import border_vertices
-from maille.simplifiers import quadric as quadric_module
 from maille.simplifiers import (
     boundary_held,
     measure_deviation,
@@ -22,6 +21,7 @@ from maille.simplifiers import (
     simplifier_for,
     simplify_to_target,
 )
+from maille.simplifiers import quadric as quadric_module
 
 BACKENDS = (maille.SIMPLIFICATION_QUADRIC, maille.SIMPLIFICATION_GREEDY)
 

@@ -6,9 +6,10 @@ Two shapes are accepted, and they are the same shape underneath:
 - a plain ``(vertices, faces)`` pair of numpy arrays, for a caller who already has them and
   should not need trimesh in *their* code to pass them.
 
-maille still needs trimesh internally -- ``slice_mesh_plane`` is how a mesh is cut at the cell
-planes, and it is not a function worth reimplementing -- so the extra is load-bearing rather
-than decorative. What the second shape buys is that the dependency stays maille's.
+trimesh is a dependency of maille rather than an extra -- ``slice_mesh_plane`` is how a mesh is
+cut at the cell planes, and it is not a function worth reimplementing -- so it is imported
+plainly here. What the second shape buys is that the dependency stays *maille's*: a caller with
+vertices and faces in hand never has to build a ``Trimesh`` to hand them over.
 """
 
 from __future__ import annotations
@@ -18,23 +19,10 @@ from dataclasses import dataclass
 from typing import Any, Union
 
 import numpy as np
-
-from maille.errors import MissingExtraError
+import trimesh
 
 #: Anything the builder accepts as one object's geometry.
 MeshSource = Union["Mesh", Any, tuple[Any, Any]]
-
-
-def require_trimesh() -> Any:  # noqa: ANN401
-    """Import trimesh lazily, raising a helpful error if the extra is missing."""
-    try:
-        import trimesh  # type: ignore
-    except ImportError as error:  # pragma: no cover - depends on the environment
-        raise MissingExtraError(
-            "trimesh is required to build a mesh collection -- it is what cuts a mesh at the "
-            "octree cell planes. Install it with `pip install maille[mesh]`."
-        ) from error
-    return trimesh
 
 
 @dataclass(frozen=True)
@@ -52,13 +40,12 @@ class Mesh:
             return zeros, zeros.copy()
         return self.vertices.min(axis=0), self.vertices.max(axis=0)
 
-    def as_trimesh(self) -> Any:  # noqa: ANN401
+    def as_trimesh(self) -> trimesh.Trimesh:
         """Wrap as a ``trimesh.Trimesh`` for the operations that need one.
 
         ``process=False``: merging vertices here would move them, and the boundary argument
         rests on the writer controlling exactly when a vertex moves.
         """
-        trimesh = require_trimesh()
         return trimesh.Trimesh(vertices=self.vertices, faces=self.faces, process=False)
 
 
@@ -111,4 +98,4 @@ def coerce_objects(objects: Mapping[int, MeshSource]) -> dict[int, Mesh]:
     return coerced
 
 
-__all__ = ["Mesh", "MeshSource", "coerce_mesh", "coerce_objects", "require_trimesh"]
+__all__ = ["Mesh", "MeshSource", "coerce_mesh", "coerce_objects"]

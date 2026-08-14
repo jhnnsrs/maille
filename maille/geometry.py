@@ -39,9 +39,10 @@ from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
+import trimesh
 
-from maille.codec import QUANT_MAX
-from maille.sources import Mesh, require_trimesh
+from maille.codecs import QUANT_MAX
+from maille.sources import Mesh
 
 # --------------------------------------------------------------------------- #
 # Decimation with a fixed boundary
@@ -74,11 +75,12 @@ def decimate_fixed(
     collapsed; an edge with one is collapsed *onto* the fixed vertex, which is what keeps a cell
     face plane exactly where the clip put it.
 
-    This is the fallback kernel, used when meshoptimizer is not installed --
-    :class:`maille.MeshoptSimplifier` is both better shaped and better measured. Two things to
+    This is the kernel behind ``simplification: GREEDY``, and the default ``QUADRIC`` is both
+    better shaped and better measured -- reach for this one where a heavily pinned boundary stops
+    the quadric collapse reaching a budget. Two things to
     know about it: the edge order is computed once from the initial lengths and never
     re-measured as vertices move, and no collapse is checked for validity, so an aggressive
-    target on a flat-faced surface can consume it entirely. :mod:`maille.simplify` handles the
+    target on a flat-faced surface can consume it entirely. :mod:`maille.simplifiers` handles the
     second by relaxing the target until something survives.
 
     ``check_interval`` is how many collapses to make between face counts; ``None`` picks 16 on
@@ -263,7 +265,6 @@ def clip_to_cells(mesh: Mesh, cell_size: np.ndarray) -> dict[tuple[int, int, int
     continues the surface across the shared plane, so a cap would be a wall inside the object,
     doubling the triangles on every cell face and showing through anything transparent.
     """
-    trimesh = require_trimesh()
     subject = mesh.as_trimesh()
     low, high = subject.bounds[0], subject.bounds[1]
 

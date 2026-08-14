@@ -27,28 +27,6 @@ jobs:
       - name: Run tests
         run: uv run pytest
 
-  # The core is numpy and pyarrow; the mesh, meshopt and obstore extras are optional and the
-  # package has to import and refuse cleanly without them. A run with no extras is what proves
-  # the lazy imports are actually lazy.
-  test_without_extras:
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Install uv and set the python version
-        uses: astral-sh/setup-uv@v6
-        with:
-          version: "latest"
-          python-version: "3.12"
-
-      - name: Install the project without its extras
-        run: uv sync --no-default-groups
-
-      # --no-sync so the run does not pull the dev group straight back in, which would
-      # reinstall exactly the extras this job exists to do without.
-      - name: Import, write and refuse cleanly with no extras installed
-        run: uv run --no-sync python scripts/check_without_extras.py
-
   test-arm:
     runs-on: ubuntu-24.04-arm
     steps:

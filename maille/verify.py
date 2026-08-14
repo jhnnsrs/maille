@@ -34,9 +34,10 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from maille.codec import QUANT_MAX, cell_box
+from maille.codecs import QUANT_MAX
 from maille.geometry import on_planes
-from maille.store import get_range_bytes, join
+from maille.octree import cell_box
+from maille.stores import get_range_bytes, join
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     from maille.reader import CellEntry, Collection
@@ -233,7 +234,7 @@ def _child_masks_name_what_exists(collection: Collection) -> Check:
     A bit set where no child exists sends a planner after geometry that is not there; a bit
     clear where one does hides that child and everything below it.
     """
-    from maille.codec import morton_encode_one
+    from maille.octree import morton_encode_one
 
     wrong: list[str] = []
     for (level, cell), entry in collection.cells.items():

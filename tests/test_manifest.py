@@ -36,7 +36,7 @@ def a_manifest(**overrides: object) -> dict:
 
 def test_the_layout_is_the_one_the_format_fixes():
     """These paths are the contract; a reader that cannot list a prefix still finds them."""
-    assert maille.MANIFEST_NAME == "meshed.json"
+    assert maille.MANIFEST_NAME == "maille.json"
     assert maille.CELL_CATALOG_PATH == "catalog/cells.parquet"
     assert maille.OBJECT_CATALOG_PATH == "catalog/objects.parquet"
     assert level_prefix(2) == "level=2"
@@ -172,3 +172,48 @@ def test_a_declared_axis_order_is_carried_through_untouched():
     """maille never reorders or normalises it -- any order is the caller's to state."""
     for order in (["z", "y", "x"], ["x", "y", "z"], ["c", "a", "b"]):
         assert list(Manifest.from_dict(a_manifest(axes=order)).to_dict()["axes"]) == order
+
+
+def test_both_blob_knobs_default_to_nothing():
+    """A collection you get without asking needs no decoder on the reading side.
+
+    That is the whole reason `NONE`/`NONE` is the default: the blob a consumer pulls out of the
+    Parquet column *is* the buffer it uploads. Size is available in exchange for a decoder, and
+    both ways of buying it are opt-in.
+    """
+    encoding = Encoding()
+
+    assert encoding.codec == maille.CODEC_NONE
+    assert encoding.compression == maille.COMPRESSION_NONE
+
+
+@pytest.mark.parametrize(
+    ("codec", "compression"),
+    [
+        (maille.CODEC_NONE, maille.COMPRESSION_NONE),
+        (maille.CODEC_NONE, maille.COMPRESSION_ZSTD),
+        (maille.CODEC_MESHOPT, maille.COMPRESSION_NONE),
+    ],
+)
+def test_the_pairs_the_format_allows(codec: str, compression: str):
+    """Three of the four combinations are legal, and each is a real choice."""
+    written = Encoding(codec=codec, compression=compression).to_dict()
+
+    assert written["codec"] == codec
+    assert written["compression"] == compression
+
+
+def test_meshopt_with_zstd_is_refused_as_undecodable():
+    """The one illegal pair, and it is a decodability problem rather than a taste one.
+
+    ZSTD framing here carries no content size, so a reader recovers the uncompressed length
+    from the row: 6 bytes a vertex, 4 bytes an index. A meshopt blob has no such relation to
+    its counts, so the length is unknowable and the pair cannot be read back at all.
+    """
+    with pytest.raises(maille.FormatError, match="cannot be decoded"):
+        Encoding(codec=maille.CODEC_MESHOPT, compression=maille.COMPRESSION_ZSTD)
+
+
+def test_the_manifest_is_named_after_the_format():
+    """`maille.json`, at the root of the prefix -- the one file a reader must find by name."""
+    assert maille.MANIFEST_NAME == "maille.json"

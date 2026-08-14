@@ -6,30 +6,33 @@ authors = [{ name = "jhnnsrs", email = "jhnnsrs@gmail.com" }]
 requires-python = ">=3.11"
 readme = "README.md"
 license = "MIT"
-# The core is the format: numpy for the geometry, pyarrow for the three Parquet frames.
-# Everything that reads a mesh in (trimesh) or compresses a blob (meshoptimizer) is an
-# extra, imported lazily, so `import maille` costs two dependencies.
+# maille builds mesh collections, so everything that takes part in building one is a
+# dependency rather than an extra. `trimesh` cuts a mesh at the cell planes and
+# `fast-simplification` makes the coarse levels; only reaching a remote store is optional.
+#
+# scipy and shapely are named because trimesh does not require them and the clipper does.
+# trimesh hard-depends on numpy alone -- both of these sit in its `easy` extra -- while
+# `slice_mesh_plane` imports `scipy.spatial.cKDTree` and `trimesh.path.polygons` (an unguarded
+# `from shapely import ops`) in its function body. Verified by blocking each import in turn:
+# cutting a single box fails without either, at `cap=False` as well as `cap=True`.
 dependencies = [
     "numpy>=1.26",
     "pyarrow>=12",
+    "trimesh>=4.0",
+    "scipy>=1.11",
+    "shapely>=2.0",
+    "fast-simplification>=0.1.7",
 ]
 
 [project.optional-dependencies]
-# Everything needed to write a collection the ordinary way, which is why it includes
-# meshoptimizer: `codec` defaults to MESHOPT, so a `[mesh]` install without it would fail on
-# the first write rather than on an opt-in path.
-#
-# scipy and shapely are not decoration either. `slice_mesh_plane` -- which is how a mesh is cut
-# at the octree cell planes -- imports `scipy.spatial.cKDTree` outright, and pulls
-# `triangulate_polygon` and `trimesh.path.polygons` (hence shapely) in the same function body,
-# before it ever reaches the branch that would use them. So both are needed to cut a mesh.
-mesh = ["trimesh>=4.0", "scipy>=1.11", "shapely>=2.0", "meshoptimizer>=0.2"]
-# The blob codec on its own, for reading or re-coding blobs without cutting anything.
+# `codec: MESHOPT` -- the codec glTF's EXT_meshopt_compression uses. Optional because the
+# format's default is `NONE`, where a blob is the raw layout a consumer uploads as-is; reach
+# for this when the payload matters more than the absence of a decoder on the other side.
 meshopt = ["meshoptimizer>=0.2"]
-# Writing to S3 (or anywhere else obstore reaches). maille only needs the protocol, so this
-# is for callers who want a store rather than a directory.
+# Writing to S3 (or anywhere else obstore reaches). maille only needs three methods off a
+# store, so this is for callers who want one rather than a directory.
 obstore = ["obstore>=0.10"]
-complete = ["trimesh>=4.0", "scipy>=1.11", "shapely>=2.0", "meshoptimizer>=0.2", "obstore>=0.10"]
+complete = ["meshoptimizer>=0.2", "obstore>=0.10"]
 # Installed inside the semantic-release Docker action so build_command has uv.
 build = ["uv>=0.7.12"]
 
@@ -40,10 +43,6 @@ dev-dependencies = [
     "python-semantic-release>=9.21.0",
     "ruff>0.11",
     "basedpyright>=1.21",
-    "trimesh>=4.0",
-    "scipy>=1.11",
-    "shapely>=2.0",
-    "meshoptimizer>=0.2",
     "obstore>=0.10",
 ]
 
@@ -95,8 +94,8 @@ line-length = 100
 
 [tool.pytest.ini_options]
 markers = [
-    "meshopt: marks tests that require the meshoptimizer extra",
-    "trimesh: marks tests that require the mesh extra",
+    "meshopt: marks tests that require the meshopt extra",
+    "obstore: marks tests that require the obstore extra",
 ]
 
 [[tool.pydoc-markdown.loaders]]

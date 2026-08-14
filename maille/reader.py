@@ -11,7 +11,7 @@ fetch a blob.
 
 And a blob is fetched **by the row group holding it**, not by the level containing it. Every
 cell-catalog row names the part and row group its geometry sits in, and a part is opened
-through :class:`maille.store.StoreFile` -- a seekable view over the store -- so pyarrow reads
+through :class:`maille.stores.StoreFile` -- a seekable view over the store -- so pyarrow reads
 the footer once and then only the column chunks of the one row group asked for. That is what
 makes the format's claim true in the reader as well as on paper: drawing forty cells costs
 forty row groups, not the levels they came from.
@@ -27,7 +27,7 @@ from typing import TYPE_CHECKING, Any
 
 import numpy as np
 
-from maille.codec import cell_box, decode_indices, decode_positions, morton_decode
+from maille.codecs import decode_indices, decode_positions
 from maille.errors import FormatError, UnfinishedCollectionError
 from maille.frames import parquet_to_table
 from maille.manifest import (
@@ -40,8 +40,9 @@ from maille.manifest import (
     Manifest,
     level_prefix,
 )
+from maille.octree import cell_box, morton_decode
 from maille.sources import Mesh
-from maille.store import (
+from maille.stores import (
     MailleStore,
     StoreFile,
     aget_bytes,
@@ -136,7 +137,7 @@ class CellEntry:
         Read straight off ``child_mask``, so descending the octree costs no listing and no
         catalog scan.
         """
-        from maille.codec import morton_encode_one
+        from maille.octree import morton_encode_one
 
         if self.level == 0 or not self.child_mask:
             return []
@@ -256,7 +257,7 @@ class Collection:
         return self.manifest.axes
 
     def _read_manifest(self) -> Manifest:
-        """Fetch and parse ``meshed.json``, naming a missing one as an unfinished write."""
+        """Fetch and parse ``maille.json``, naming a missing one as an unfinished write."""
         path = join(self.prefix, MANIFEST_NAME)
         try:
             body = get_bytes(self.store, path)
@@ -398,7 +399,7 @@ class Collection:
 
     @cached_property
     def _part_files(self) -> dict[tuple[int, int], StoreFile]:
-        """The :class:`~maille.store.StoreFile` under each open part, for the async path.
+        """The :class:`~maille.stores.StoreFile` under each open part, for the async path.
 
         Held separately because it is what a prefetch primes, and because a part opened from a
         whole-object read has none -- there is nothing left to fetch for it.
@@ -523,16 +524,26 @@ class Collection:
             ) from error
 
         record = {name: table.column(name)[row].as_py() for name in table.column_names}
+        # Both taken from the manifest rather than assumed: they are the two declarations a
+        # decoder cannot re-derive from the bytes, which is why the format refuses to default
+        # them. See `maille.manifest.Encoding`.
         codec = self.encoding.codec
+        compression = self.encoding.compression
         vertices = decode_positions(
             record["positions"],
             cell=entry.cell,
             level=entry.level,
             cell_size=self.grid.cell_size,
             codec=codec,
+            compression=compression,
             vertex_count=int(record["vertex_count"]),
         )
-        faces = decode_indices(record["indices"], codec=codec, index_count=int(record["index_count"]))
+        faces = decode_indices(
+            record["indices"],
+            codec=codec,
+            compression=compression,
+            index_count=int(record["index_count"]),
+        )
         return DecodedCell(
             level=entry.level,
             cell=entry.cell,
@@ -733,7 +744,7 @@ async def aopen_collection(store: MailleStore, prefix: str = "") -> Collection:
 
 
 async def _amanifest_bytes(store: MailleStore, prefix: str) -> bytes:
-    """Fetch ``meshed.json``, naming a missing one as the unfinished write it is."""
+    """Fetch ``maille.json``, naming a missing one as the unfinished write it is."""
     path = join(prefix, MANIFEST_NAME)
     try:
         return await aget_bytes(store, path)

@@ -21,8 +21,64 @@ Run it (after example 1, or it will write the collection itself)::
 
 from __future__ import annotations
 
+import math
+from pathlib import Path
+
 import numpy as np
-from common import OUTPUT, demo_objects, ensure_collection, megabytes, rule
+import trimesh
+
+import maille
+
+#: Where example 1 wrote, and where this one reads from.
+OUTPUT = Path(__file__).parent / "out"
+COLLECTION = "segmentation"
+CELL_SIZE = (128, 128, 64)
+LEVELS = 3
+
+
+def demo_objects(count: int = 32) -> dict[int, trimesh.Trimesh]:
+    """The same scene example 1 wrote: ``{instance_id: trimesh.Trimesh}``, in voxel coordinates.
+
+    A segmentation-shaped set of small objects spread along **x**, keyed by the sparse instance
+    ids a label image would carry. Kept here so the decoded meshes can be compared against the
+    geometry they came from.
+    """
+    objects: dict[int, trimesh.Trimesh] = {}
+    for index in range(count):
+        x = 120.0 + index * 90.0
+        y = 260.0 + 120.0 * math.sin(index * 0.7)
+        z = 130.0 + 60.0 * math.cos(index * 0.5)
+
+        instance_id = 1000 + index * 7
+        if index % 3 == 0:
+            body = trimesh.creation.icosphere(radius=26.0, subdivisions=3)
+        elif index % 3 == 1:
+            body = trimesh.creation.box(extents=[46.0, 30.0, 22.0])
+        else:
+            body = trimesh.creation.capsule(radius=14.0, height=40.0, count=[24, 24])
+        objects[instance_id] = body.apply_translation([x, y, z])
+
+    return objects
+
+
+def ensure_collection() -> maille.Collection:
+    """Write the demo collection if example 1 has not been run yet, and open it either way."""
+    store = maille.DirectoryStore(OUTPUT, create=True)
+    if not (OUTPUT / COLLECTION / "maille.json").is_file():
+        print(f"No collection at {OUTPUT / COLLECTION}, writing one first...")
+        maille.write_meshes(demo_objects(), store, prefix=COLLECTION, cell_size=CELL_SIZE, levels=LEVELS)
+
+    return maille.open_collection(store, COLLECTION)
+
+
+def megabytes(size: int) -> str:
+    """Format a byte count the way a fetch budget is usually discussed."""
+    return f"{size / 1_000_000:6.2f} MB"
+
+
+def rule(title: str) -> None:
+    """Print a section heading, so a long run stays readable."""
+    print(f"\n{title}\n{'-' * len(title)}")
 
 
 def main() -> None:
@@ -31,7 +87,7 @@ def main() -> None:
 
     rule("What the store says about itself")
     # Everything needed to decode the geometry travels next to the geometry -- that is what
-    # makes a collection one store rather than a handful, and it is read from `meshed.json`
+    # makes a collection one store rather than a handful, and it is read from `maille.json`
     # alone, before a single Parquet file is opened.
     print(f"grid      : cell_size={collection.grid.cell_size} (x, y, z), levels={collection.grid.levels}")
     print(f"axes      : {list(collection.axes) if collection.axes else '(none declared -- optional, and never read)'}")
@@ -103,8 +159,6 @@ def main() -> None:
     # 3. A whole level, as one trimesh scene.
     # ---------------------------------------------------------------- #
     rule("A whole level, as one scene")
-    import trimesh
-
     for level in range(collection.grid.levels):
         pieces = [
             collection.read_cell(entry.level, entry.cell).mesh().as_trimesh()

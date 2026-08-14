@@ -35,13 +35,17 @@ structure a dumb object store can serve and a renderer can plan against.
 ```bash
 pip install maille              # everything needed to build and read collections
 pip install 'maille[obstore]'   # + obstore, to write to S3 and friends
+pip install 'maille[meshopt]'   # + the optional MESHOPT blob codec
 ```
 
 Everything that takes part in building a collection is a dependency rather than an extra:
-trimesh cuts a mesh at the cell planes (pulling in scipy and shapely, which
-`slice_mesh_plane` imports outright), `fast-simplification` makes the coarse levels, and
-`meshoptimizer` is the blob codec the format defaults to. Only reaching a remote store is
-optional — maille asks a store for three methods and does not care who implements them.
+trimesh cuts a mesh at the cell planes and `fast-simplification` makes the coarse levels.
+scipy and shapely are named explicitly because trimesh does not require them and the clipper
+does — `slice_mesh_plane` imports `scipy.spatial.cKDTree` and `trimesh.path.polygons` (an
+unguarded `from shapely import ops`) in its body, verified by blocking each in turn.
+
+What is genuinely optional is what a *consumer* would otherwise need code for: reaching a
+remote store, and decoding a compressed blob.
 
 ## Examples
 
@@ -93,7 +97,7 @@ collection.write(store, "my-collection")
 
 ```
 my-collection/
-  meshed.json                  <- the manifest, written LAST
+  maille.json                  <- the manifest, written LAST
   catalog/cells.parquet        <- one row per (level, cell)
   catalog/objects.parquet      <- one row per object
   level=0/part-00000.parquet   <- the geometry, finest level
@@ -121,7 +125,7 @@ lives at the end of a file you have to be able to seek to.
 collection = maille.open_collection(LocalStore("/data"), "my-collection")
 
 collection.grid.cell_size      # (128, 128, 64)
-collection.encoding.codec      # 'MESHOPT'
+collection.encoding.codec      # 'NONE'
 collection.cells               # the whole spatial index, {(level, cell): CellEntry}
 
 # Which cells, at which level, for this view? Answered from the catalog alone.
@@ -189,19 +193,20 @@ For a plain path and no dependencies, `maille.DirectoryStore("/data")` does the 
 
 ## Simplification
 
-Each coarser level is the same surfaces with fewer triangles, and how that reduction is done is
-a pluggable backend rather than a hardcoded loop:
+Each coarser level is the same surfaces with fewer triangles, and which algorithm does that
+reduction is named the way a codec is — a value out of a small vocabulary:
 
 ```python
-maille.build_collection(objects, cell_size=(128, 128, 64))                        # meshopt if installed
-maille.build_collection(objects, cell_size=..., simplifier=maille.GreedyEdgeCollapse())
+maille.build_collection(objects, cell_size=(128, 128, 64))                  # QUADRIC, the default
+maille.build_collection(objects, cell_size=..., simplifier="GREEDY")
+maille.build_collection(objects, cell_size=..., simplifier=maille.GreedyEdgeCollapse())  # configured
 maille.build_collection(objects, cell_size=..., decimation=maille.Decimation.half())
 ```
 
 | Backend | What it is |
 | --- | --- |
-| `QuadricSimplifier` | **The default**, backed by [fast-simplification][fs]. Quadric edge collapse run with `preserve_border=True`, which pins every vertex on the cut curve at *exactly* its input position while letting interior vertices move to the shape-optimal spot. That split is what the format wants: the cut curve is the only thing a neighbour shares, so it is the only thing that must not move. |
-| `GreedyEdgeCollapse` | Shortest-edge collapse in pure numpy. Lower quality and a much looser error estimate, but it pins only *this* level's cell planes, so it reduces harder on heavily cut objects. |
+| `"QUADRIC"` (`QuadricSimplifier`) | **The default**, backed by [fast-simplification][fs]. Quadric edge collapse run with `preserve_border=True`, which pins every vertex on the cut curve at *exactly* its input position while letting interior vertices move to the shape-optimal spot. That split is what the format wants: the cut curve is the only thing a neighbour shares, so it is the only thing that must not move. |
+| `"GREEDY"` (`GreedyEdgeCollapse`) | Shortest-edge collapse in pure numpy. Lower quality and a much looser error estimate, but it pins only *this* level's cell planes, so it reduces harder on heavily cut objects. |
 
 The trade is real and worth knowing before you pick. `preserve_border` is all-or-nothing: after
 a coarse cell welds its children, the topological boundary still contains the level-0 seams
@@ -219,11 +224,13 @@ is given. The ratio and the name written into `encoding.decimation` are **requir
 declaring `QUARTER` while reducing by half would be a claim about the geometry that nothing
 downstream could test.
 
-Bring your own by implementing one method:
+Bring your own by implementing one method — `maille.Simplifier` is a structural protocol, so
+there is nothing to inherit:
 
 ```python
 class MySimplifier:
     name = "mine"
+    uses_fixed_mask = True
     def simplify(self, vertices, faces, *, fixed, target_faces) -> maille.Simplified: ...
 ```
 
@@ -252,6 +259,32 @@ registration time — the point in a pipeline where rejecting a bad collection i
 
 Nothing raises. A verifier that stops at the first problem tells you about one thing when you
 wanted all of them, so every check runs and the report carries the lot.
+
+## Blob encoding
+
+Two independent knobs, and **both default to `NONE`** — a blob is then the raw little-endian
+layout the format describes, which a consumer reads out of the Parquet column and uploads to
+the GPU with nothing in between:
+
+```python
+maille.build_collection(objects, cell_size=...)                              # NONE / NONE
+maille.build_collection(objects, cell_size=..., compression="ZSTD")          # smaller on disk
+maille.build_collection(objects, cell_size=..., codec="MESHOPT")             # needs [meshopt]
+```
+
+| | what it is | measured on the demo scene |
+| --- | --- | --- |
+| `codec: NONE` | positions are 6 bytes a vertex, indices 4 bytes an index | 366 KB |
+| `compression: ZSTD` | each blob is a zstd frame; its length comes from the row's vertex/index count, since the framing carries none | 355 KB |
+| `codec: MESHOPT` | glTF's `EXT_meshopt_compression`, needing a decoder on the reading side | 237 KB |
+
+The honest summary: ZSTD buys ~3% because the Parquet file is already zstd-compressed around
+the blobs, so it is mostly redundant. MESHOPT buys 35% and costs the consumer a decoder.
+`NONE`/`NONE` costs nothing and needs nothing, which is why it is the default.
+
+`codec: MESHOPT` with `compression: ZSTD` is refused rather than merely discouraged: the ZSTD
+framing derives a blob's uncompressed length from the row's counts, and a meshopt blob has no
+fixed size per element, so the pair is undecodable.
 
 ## Coordinates
 
@@ -306,6 +339,9 @@ What it does *not* do: it holds every object in memory and builds one shard per 
 sized for thousands of objects rather than millions; and `lod_error` is an upper bound rather
 than a measured Hausdorff distance.
 
-The byte format is documented in `maille/codec.py`, the tree layout in `maille/manifest.py`.
+The byte format is documented in `maille/codecs/`, how space is divided in `maille/octree.py`,
+and the tree layout in `maille/manifest.py`. The three pluggable pieces are packages with the
+same shape — a protocol module and one module per implementation: `maille/stores/`,
+`maille/codecs/` and `maille/simplifiers/`.
 
 [obstore]: https://developmentseed.org/obstore/

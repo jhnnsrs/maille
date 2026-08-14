@@ -65,13 +65,13 @@ def edit_geometry(store: maille.MemoryStore, path: str, column: str, values: lis
     body = table_to_parquet(replaced)
     store.objects[key] = body
 
-    manifest = json.loads(store.objects["c/meshed.json"])
+    manifest = json.loads(store.objects["c/maille.json"])
     for entries in manifest["files"]["levels"].values():
         for entry in entries:
             if entry["path"] == path:
                 entry["bytes"] = len(body)
                 entry["rowGroups"] = 1
-    store.objects["c/meshed.json"] = json.dumps(manifest).encode()
+    store.objects["c/maille.json"] = json.dumps(manifest).encode()
 
 
 @pytest.mark.parametrize("tier", TIERS)
@@ -258,7 +258,7 @@ def test_a_boundary_vertex_that_moved_is_caught(sound: maille.MemoryStore):
     where two levels meet -- so it is checked by displacing one pinned vertex and requiring the
     verifier to notice.
     """
-    from maille.codec import decode_positions, encode_positions
+    from maille.codecs import decode_positions, encode_positions
     from maille.geometry import on_planes
 
     collection = opened(sound)
@@ -348,5 +348,5 @@ def test_the_manifest_and_the_report_agree_on_which_files_exist(sound: maille.Me
 
     paths = verify_paths(opened(sound))
 
-    assert set(paths) == {path.removeprefix("c/") for path in sound.objects if path != "c/meshed.json"}
-    assert json.loads(sound.objects["c/meshed.json"])["files"]["cells"]["path"] in paths
+    assert set(paths) == {path.removeprefix("c/") for path in sound.objects if path != "c/maille.json"}
+    assert json.loads(sound.objects["c/maille.json"])["files"]["cells"]["path"] in paths

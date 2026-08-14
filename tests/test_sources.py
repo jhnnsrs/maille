@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import numpy as np
 import pytest
+import trimesh
 
 import maille
 from maille.sources import Mesh, coerce_mesh, coerce_objects
@@ -20,7 +21,6 @@ def test_a_vertices_faces_pair_is_accepted():
 
 def test_a_trimesh_is_accepted():
     """The shape a mesh extractor usually hands you."""
-    trimesh = pytest.importorskip("trimesh")
 
     mesh = coerce_mesh(trimesh.creation.box(extents=[2.0, 3.0, 4.0]))
 

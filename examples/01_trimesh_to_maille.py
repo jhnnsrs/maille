@@ -19,10 +19,80 @@ It writes to ``examples/out/segmentation`` and prints the tree that landed.
 
 from __future__ import annotations
 
+import math
+from pathlib import Path
+
 import numpy as np
-from common import AXES, CELL_SIZE, COLLECTION, LEVELS, OUTPUT, demo_objects, megabytes, rule, store
+import trimesh
 
 import maille
+
+#: Where this script writes. It is in .gitignore; delete it whenever you like.
+OUTPUT = Path(__file__).parent / "out"
+
+#: The collection the other two examples read.
+COLLECTION = "segmentation"
+
+#: In voxels, one per component, in the same order as the vertices below. Anisotropic because
+#: real acquisitions are -- one axis is usually sampled coarser than the other two -- and a cell
+#: that matches the source array's chunk shape is what makes a viewer fetch image chunks and
+#: mesh cells over the same regions.
+CELL_SIZE = (128, 128, 64)
+
+#: An axis order a *caller* might declare. maille never reads it -- it is carried into the
+#: manifest for whatever owns the coordinate system. The last section shows the pass-through.
+AXES = ("z", "y", "x")
+
+LEVELS = 3
+
+
+def demo_objects(count: int = 32) -> dict[int, trimesh.Trimesh]:
+    """A segmentation-shaped scene: ``{instance_id: trimesh.Trimesh}``, in voxel coordinates.
+
+    A segmentation is what maille is for, so the demo scene is shaped like one: a few dozen
+    small objects scattered through a volume, keyed by the instance ids they would carry in a
+    label image. It is spread along **x** on purpose -- that is what lets a single camera see
+    some objects close up and others far away, which is the whole point of example 3.
+
+    Every object sits in the positive octant, which the format requires: a cell index is
+    non-negative, so geometry is shifted into the positive octant before it is addressed.
+    """
+    objects: dict[int, trimesh.Trimesh] = {}
+    for index in range(count):
+        # A slow spiral down +x, so distance from a camera at one end varies a lot.
+        x = 120.0 + index * 90.0
+        y = 260.0 + 120.0 * math.sin(index * 0.7)
+        z = 130.0 + 60.0 * math.cos(index * 0.5)
+
+        instance_id = 1000 + index * 7  # ids as a label image would carry them: sparse, unsorted
+        if index % 3 == 0:
+            body = trimesh.creation.icosphere(radius=26.0, subdivisions=3)
+        elif index % 3 == 1:
+            body = trimesh.creation.box(extents=[46.0, 30.0, 22.0])
+        else:
+            body = trimesh.creation.capsule(radius=14.0, height=40.0, count=[24, 24])
+        objects[instance_id] = body.apply_translation([x, y, z])
+
+    return objects
+
+
+def store() -> maille.DirectoryStore:
+    """The store this script writes into: a plain directory, so you can go and look at it.
+
+    Swapping this for ``obstore.store.S3Store(...)`` is the only change needed to write the
+    same tree to S3 -- maille asks a store for ``put``/``get``/``list`` and nothing else.
+    """
+    return maille.DirectoryStore(OUTPUT, create=True)
+
+
+def megabytes(size: int) -> str:
+    """Format a byte count the way a fetch budget is usually discussed."""
+    return f"{size / 1_000_000:6.2f} MB"
+
+
+def rule(title: str) -> None:
+    """Print a section heading, so a long run stays readable."""
+    print(f"\n{title}\n{'-' * len(title)}")
 
 
 def main() -> None:
@@ -51,8 +121,9 @@ def main() -> None:
         # is the value worth matching, and no amount of looking at meshes reveals it.
         cell_size=CELL_SIZE,
         levels=LEVELS,
-        # `codec` defaults to MESHOPT -- the codec glTF's EXT_meshopt_compression uses, so a web
-        # renderer already ships the decoder. `codec="NONE"` writes the blobs raw.
+        # `codec` and `compression` both default to NONE, so a blob is the raw little-endian
+        # layout a consumer uploads as-is. `compression="ZSTD"` and `codec="MESHOPT"` (the
+        # latter needing the `meshopt` extra) trade a decoder on the reading side for size.
     )
 
     print(f"wrote {OUTPUT / COLLECTION}")
@@ -69,7 +140,7 @@ def main() -> None:
             print(f"  {path.relative_to(root)!s:32s} {megabytes(path.stat().st_size)}")
     print(
         "\nThe manifest is written LAST, and that is the completion protocol: a prefix has no\n"
-        "atomic 'upload finished' flag, so a tree without `meshed.json` is an interrupted write\n"
+        "atomic 'upload finished' flag, so a tree without `maille.json` is an interrupted write\n"
         "rather than a collection -- and opening one is refused instead of half-succeeding."
     )
 

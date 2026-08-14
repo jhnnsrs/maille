@@ -27,10 +27,10 @@ def test_opening_reads_the_manifest_and_nothing_else(written: maille.MemoryStore
     store = CountingStore(written.objects)
 
     collection = maille.open_collection(store, "collection")
-    assert store.reads == ["collection/meshed.json"]
+    assert store.reads == ["collection/maille.json"]
 
     collection.cells  # noqa: B018 - the access is the point
-    assert store.reads == ["collection/meshed.json", "collection/catalog/cells.parquet"]
+    assert store.reads == ["collection/maille.json", "collection/catalog/cells.parquet"]
 
 
 def test_the_declarations_survive_the_round_trip(collection: maille.MeshCollection, opened: maille.Collection):
@@ -170,7 +170,7 @@ def test_a_collection_can_be_opened_at_the_root_of_a_store(collection: maille.Me
 
     opened = maille.open_collection(store)
 
-    assert "meshed.json" in store.objects
+    assert "maille.json" in store.objects
     assert len(opened.cells) == collection.cell_catalog.num_rows
 
 
@@ -192,9 +192,9 @@ def test_a_level_is_found_by_listing_when_the_manifest_does_not_name_its_parts(
     store = maille.MemoryStore()
     maille.write_collection(collection, store, "collection")
 
-    stripped = json.loads(store.objects["collection/meshed.json"])
+    stripped = json.loads(store.objects["collection/maille.json"])
     stripped["files"] = {}
-    store.objects["collection/meshed.json"] = json.dumps(stripped).encode()
+    store.objects["collection/maille.json"] = json.dumps(stripped).encode()
 
     opened = maille.open_collection(store, "collection")
 
@@ -210,9 +210,9 @@ def test_the_listing_fallback_works_at_the_root_of_a_store(collection: maille.Me
     store = maille.MemoryStore()
     maille.write_collection(collection, store)
 
-    stripped = json.loads(store.objects["meshed.json"])
+    stripped = json.loads(store.objects["maille.json"])
     stripped["files"] = {}
-    store.objects["meshed.json"] = json.dumps(stripped).encode()
+    store.objects["maille.json"] = json.dumps(stripped).encode()
 
     opened = maille.open_collection(store)
 
@@ -225,9 +225,9 @@ def test_a_level_with_nothing_stored_under_it_says_so(collection: maille.MeshCol
     store = maille.MemoryStore()
     maille.write_collection(collection, store, "collection")
 
-    stripped = json.loads(store.objects["collection/meshed.json"])
+    stripped = json.loads(store.objects["collection/maille.json"])
     stripped["files"] = {}
-    store.objects["collection/meshed.json"] = json.dumps(stripped).encode()
+    store.objects["collection/maille.json"] = json.dumps(stripped).encode()
     del store.objects["collection/level=2/part-00000.parquet"]
 
     opened = maille.open_collection(store, "collection")

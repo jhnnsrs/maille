@@ -14,6 +14,7 @@ from typing import Any
 
 import numpy as np
 import pytest
+import trimesh
 
 import maille
 
@@ -26,11 +27,6 @@ AXES = ("z", "y", "x")
 LEVELS = 3
 
 
-def require_trimesh() -> Any:  # noqa: ANN401
-    """Skip a test when the mesh extra is not installed."""
-    return pytest.importorskip("trimesh")
-
-
 @pytest.fixture(scope="session")
 def objects() -> dict[int, Any]:
     """Two objects that disagree under any permutation of the axes.
@@ -40,7 +36,6 @@ def objects() -> dict[int, Any]:
     ``QUARTER`` has nothing left to take from it, which is the case that used to make an object
     disappear from the coarse levels.
     """
-    trimesh = require_trimesh()
     return {
         # Wider than a cell in x and y, so it is cut and its fragments share faces.
         7: trimesh.creation.box(extents=[300.0, 170.0, 90.0]).apply_translation([260.0, 210.0, 95.0]),
