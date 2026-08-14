@@ -542,6 +542,14 @@ def _boundary_vertices_survive_decimation(collection: Collection) -> Check:
     check: take a coarse cell's vertices that lie on its own face planes, and require each to
     be present among its children's vertices on those same planes.
 
+    **Checked in both directions, because one is not enough.** Asking only "is every coarse
+    on-plane vertex still there among the children" silently ignores the failure it most needs
+    to catch: a vertex that was *moved off* the plane is no longer on-plane, so it drops out of
+    the coarse set and the check never looks at it. The other direction closes that -- every
+    child vertex lying on one of the coarse cell's own planes must still be present at the
+    coarse level, because a coarser cell's planes are a subset of a finer cell's, so such a
+    vertex is pinned at every level in between and cannot legitimately go anywhere.
+
     The tolerance is the coarse cell's quantization step. Two levels quantize against different
     extents, so an exactly-locked vertex still lands on two slightly different reconstructions
     -- ``geometry.py`` works the residual out exactly, and it is smaller than one step.
@@ -555,21 +563,30 @@ def _boundary_vertices_survive_decimation(collection: Collection) -> Check:
         if not children:
             continue
         _, extent = cell_box(entry.cell, entry.level, collection.grid.cell_size)
+        planes = np.asarray(extent, dtype=np.float64)
         step = float(np.max(extent)) / QUANT_MAX
         try:
             coarse = collection.read_cell(entry.level, entry.cell).vertices
             fine = np.vstack([collection.read_cell(c.level, c.cell).vertices for c in children])
         except Exception:  # noqa: BLE001, S112 - the blob tier already reported this
             continue
-        pinned = coarse[on_planes(coarse, np.asarray(extent, dtype=np.float64), tolerance=step)]
-        if not len(pinned) or not len(fine):
+        if not len(coarse) or not len(fine):
             continue
-        compared += len(pinned)
-        missing = _count_unmatched(pinned, fine, tolerance=2.0 * step)
-        if missing:
+
+        pinned = coarse[on_planes(coarse, planes, tolerance=step)]
+        held = fine[on_planes(fine, planes, tolerance=step)]
+        compared += len(pinned) + len(held)
+        appeared = _count_unmatched(pinned, held, tolerance=2.0 * step) if len(pinned) else 0
+        vanished = _count_unmatched(held, pinned, tolerance=2.0 * step) if len(held) else 0
+        if appeared:
             drifted.append(
-                f"level {entry.level} cell {entry.cell}: {missing}/{len(pinned)} on-plane vertices "
-                f"are absent from its children"
+                f"level {entry.level} cell {entry.cell}: {appeared}/{len(pinned)} on-plane vertices "
+                f"are not on its children's planes"
+            )
+        if vanished:
+            drifted.append(
+                f"level {entry.level} cell {entry.cell}: {vanished}/{len(held)} of its children's "
+                f"on-plane vertices did not survive to this level"
             )
     return Check(
         name="on-plane vertices are held fixed across levels (boundary: LOCKED)",

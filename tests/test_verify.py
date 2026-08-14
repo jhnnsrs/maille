@@ -12,6 +12,7 @@ import json
 import warnings
 from typing import Any
 
+import numpy as np
 import pyarrow as pa
 import pytest
 
@@ -205,6 +206,104 @@ def test_a_geometry_row_holding_an_unknown_object_is_caught(sound: maille.Memory
     edit_geometry(sound, "level=0/part-00000.parquet", "object_ids", ids)
 
     assert "the two catalogs agree about who is in which cell" in failed(sound, tier="blobs")
+
+
+def test_the_geometry_checks_actually_compared_something(sound: maille.MemoryStore):
+    """A check that compared nothing passes for the wrong reason.
+
+    Both cross-level checks count what they looked at, and both would report a serene pass on a
+    collection where they found no pairs to compare. Since these are the checks the module
+    exists for, the counters are asserted rather than trusted.
+    """
+    report = verify(opened(sound), tier="geometry")
+    detail = {check.name: check.detail for check in report.checks}
+
+    pinned = detail["on-plane vertices are held fixed across levels (boundary: LOCKED)"]
+    bounded = detail["lod_error bounds how far a vertex moved from level 0"]
+
+    assert not pinned.startswith("0 "), f"the LOCKED check compared nothing: {pinned}"
+    assert not bounded.startswith("0 "), f"the lod_error check compared nothing: {bounded}"
+
+
+def test_a_coarse_level_larger_than_the_one_below_is_caught(sound: maille.MemoryStore):
+    """The inversion the writer warns about: zooming out fetches more and draws worse."""
+    table = parquet_to_table(sound.objects["c/catalog/cells.parquet"])
+    levels = table.column("level").to_pylist()
+    counts = table.column("index_count").to_pylist()
+    counts = [count * 100 if level == LEVELS - 1 else count for level, count in zip(levels, counts)]
+    edit_catalog(sound, "index_count", counts)
+
+    assert "a coarse level holds less than the level it summarises" in failed(sound, tier="geometry")
+
+
+def test_an_lod_error_too_small_to_be_true_is_caught(sound: maille.MemoryStore):
+    """``lod_error`` is what a planner spends, so a collection understating it draws blurred.
+
+    Only the finer levels are shrunk, so the parent-dominance check stays satisfied and this
+    failure lands on the check that owns it rather than on its neighbour.
+    """
+    table = parquet_to_table(sound.objects["c/catalog/cells.parquet"])
+    levels = table.column("level").to_pylist()
+    errors = table.column("lod_error").to_pylist()
+    errors = [1e-9 if 0 < level < LEVELS - 1 else error for level, error in zip(levels, errors)]
+    edit_catalog(sound, "lod_error", errors)
+
+    assert "lod_error bounds how far a vertex moved from level 0" in failed(sound, tier="geometry")
+
+
+def test_a_boundary_vertex_that_moved_is_caught(sound: maille.MemoryStore):
+    """The claim the whole format rests on: a vertex on a cell face plane did not move.
+
+    Nothing downstream can see this -- a renderer looks at one cell and a crack only appears
+    where two levels meet -- so it is checked by displacing one pinned vertex and requiring the
+    verifier to notice.
+    """
+    from maille.codec import decode_positions, encode_positions
+    from maille.geometry import on_planes
+
+    collection = opened(sound)
+
+    # Search from the coarsest level down for one that has a pinned vertex at all. The very
+    # coarsest often does not: when the whole collection fits in one cell there is nothing
+    # lying on that cell's faces, and the claim has no content there.
+    for level in range(LEVELS - 1, 0, -1):
+        path = f"level={level}/part-00000.parquet"
+        table = parquet_to_table(sound.objects[f"c/{path}"])
+        cells = table.column("cell").to_pylist()
+        counts = table.column("vertex_count").to_pylist()
+        positions = table.column("positions").to_pylist()
+        for row, cell in enumerate(cells):
+            origin, extent = maille.cell_box(cell, level, collection.grid.cell_size)
+            vertices = decode_positions(
+                positions[row],
+                cell=cell,
+                level=level,
+                cell_size=collection.grid.cell_size,
+                codec=collection.encoding.codec,
+                vertex_count=counts[row],
+            )
+            pinned = on_planes(vertices, extent, tolerance=float(extent.max()) / maille.QUANT_MAX)
+            if not pinned.any():
+                continue
+            # Several quanta, so the displacement cannot be mistaken for the documented
+            # residual between two levels' quantization grids -- and *inward*, because a
+            # vertex on a face pushed outward leaves the cell entirely and the encoder
+            # rejects it as a partitioning bug before the verifier ever sees it.
+            target = pinned.argmax()
+            centre = origin + extent / 2.0
+            vertices[target] += np.sign(centre - vertices[target]) * (extent / 64.0)
+            positions[row] = encode_positions(
+                vertices, cell=cell, level=level, cell_size=collection.grid.cell_size, codec=collection.encoding.codec
+            )
+            edit_geometry(sound, path, "positions", positions)
+            break
+        else:
+            continue
+        break
+    else:
+        pytest.fail("the fixture has no pinned vertex at any level to displace")
+
+    assert "on-plane vertices are held fixed across levels (boundary: LOCKED)" in failed(sound, tier="geometry")
 
 
 def test_the_report_reads_as_something_a_person_would_read(sound: maille.MemoryStore):
