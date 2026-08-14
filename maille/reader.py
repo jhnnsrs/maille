@@ -20,12 +20,13 @@ forty row groups, not the levels they came from.
 from __future__ import annotations
 
 import asyncio
-from collections.abc import Iterator, Sequence
+from collections.abc import Iterator, Mapping, Sequence
 from dataclasses import dataclass
 from functools import cached_property
-from typing import TYPE_CHECKING, Any
+from typing import IO, TYPE_CHECKING, Any, cast
 
 import numpy as np
+import numpy.typing as npt
 
 from maille.codecs import decode_indices, decode_positions
 from maille.errors import FormatError, UnfinishedCollectionError
@@ -62,6 +63,33 @@ def _optional_int(column: Sequence[Any], row: int) -> int | None:
         return None
     value = column[row]
     return None if value is None else int(value)
+
+
+def _present(columns: Mapping[str, Sequence[Any]], name: str, row: int) -> Any:  # noqa: ANN401
+    """One value out of a column the format declares non-null, or a refusal naming it.
+
+    Every catalog column but ``part``/``row_group``/``blob_bytes`` is non-null in the schema a
+    server checks, so a null here is a catalog maille did not write. Saying which column and
+    which row beats the ``TypeError: int() argument must be...`` that reading it blindly gives.
+    """
+    value = columns[name][row]
+    if value is None:
+        raise FormatError(
+            f"Row {row} of this catalog holds null in `{name}`, which the format declares non-null. "
+            f"A catalog with a null there was not written by maille, and reading it would silently "
+            f"invent a value for a cell a planner is about to fetch."
+        )
+    return value
+
+
+def _int(columns: Mapping[str, Sequence[Any]], name: str, row: int) -> int:
+    """One non-null integer out of a catalog column."""
+    return int(_present(columns, name, row))
+
+
+def _float(columns: Mapping[str, Sequence[Any]], name: str, row: int) -> float:
+    """One non-null float out of a catalog column."""
+    return float(_present(columns, name, row))
 
 
 def _buffer(body: bytes) -> Any:  # noqa: ANN401
@@ -179,8 +207,8 @@ class DecodedCell:
 
     level: int
     cell: int
-    vertices: np.ndarray
-    faces: np.ndarray
+    vertices: npt.NDArray[np.float64]
+    faces: npt.NDArray[np.int64]
     object_ids: tuple[int, ...]
     object_ordinals: tuple[int, ...]
     object_vertex_offsets: tuple[int, ...]
@@ -247,15 +275,6 @@ class Collection:
         """How this collection's blobs are packed."""
         return self.manifest.encoding
 
-    @property
-    def axes(self) -> tuple[str, ...] | None:
-        """The axis order the writer declared, or ``None`` if it declared none.
-
-        Optional by design: nothing in the format decodes through it, so a collection without
-        it is complete. See :func:`maille.manifest.validate_axes`.
-        """
-        return self.manifest.axes
-
     def _read_manifest(self) -> Manifest:
         """Fetch and parse ``maille.json``, naming a missing one as an unfinished write."""
         path = join(self.prefix, MANIFEST_NAME)
@@ -301,23 +320,23 @@ class Collection:
         entries: dict[tuple[int, int], CellEntry] = {}
         for row in range(table.num_rows):
             entry = CellEntry(
-                level=int(columns["level"][row]),
-                cell=int(columns["cell"][row]),
-                vertex_count=int(columns["vertex_count"][row]),
-                index_count=int(columns["index_count"][row]),
+                level=_int(columns, "level", row),
+                cell=_int(columns, "cell", row),
+                vertex_count=_int(columns, "vertex_count", row),
+                index_count=_int(columns, "index_count", row),
                 bbox_min=(
-                    float(columns["bbox_min_x"][row]),
-                    float(columns["bbox_min_y"][row]),
-                    float(columns["bbox_min_z"][row]),
+                    _float(columns, "bbox_min_x", row),
+                    _float(columns, "bbox_min_y", row),
+                    _float(columns, "bbox_min_z", row),
                 ),
                 bbox_max=(
-                    float(columns["bbox_max_x"][row]),
-                    float(columns["bbox_max_y"][row]),
-                    float(columns["bbox_max_z"][row]),
+                    _float(columns, "bbox_max_x", row),
+                    _float(columns, "bbox_max_y", row),
+                    _float(columns, "bbox_max_z", row),
                 ),
-                lod_error=float(columns["lod_error"][row]),
-                object_count=int(columns["object_count"][row]),
-                child_mask=int(columns["child_mask"][row]),
+                lod_error=_float(columns, "lod_error", row),
+                object_count=_int(columns, "object_count", row),
+                child_mask=_int(columns, "child_mask", row),
                 part=_optional_int(columns.get("part", []), row),
                 row_group=_optional_int(columns.get("row_group", []), row),
                 blob_bytes=_optional_int(columns.get("blob_bytes", []), row),
@@ -333,21 +352,23 @@ class Collection:
         entries: dict[int, ObjectEntry] = {}
         for row in range(table.num_rows):
             entry = ObjectEntry(
-                object_id=int(columns["object_id"][row]),
-                ordinal=int(columns["ordinal"][row]),
+                object_id=_int(columns, "object_id", row),
+                ordinal=_int(columns, "ordinal", row),
                 bbox_min=(
-                    float(columns["bbox_min_x"][row]),
-                    float(columns["bbox_min_y"][row]),
-                    float(columns["bbox_min_z"][row]),
+                    _float(columns, "bbox_min_x", row),
+                    _float(columns, "bbox_min_y", row),
+                    _float(columns, "bbox_min_z", row),
                 ),
                 bbox_max=(
-                    float(columns["bbox_max_x"][row]),
-                    float(columns["bbox_max_y"][row]),
-                    float(columns["bbox_max_z"][row]),
+                    _float(columns, "bbox_max_x", row),
+                    _float(columns, "bbox_max_y", row),
+                    _float(columns, "bbox_max_z", row),
                 ),
-                vertex_count=int(columns["vertex_count"][row]),
-                index_count=int(columns["index_count"][row]),
-                cells=tuple((int(item["level"]), int(item["cell"])) for item in columns["cells"][row]),
+                vertex_count=_int(columns, "vertex_count", row),
+                index_count=_int(columns, "index_count", row),
+                cells=tuple(
+                    (int(item["level"]), int(item["cell"])) for item in _present(columns, "cells", row)
+                ),
             )
             entries[entry.object_id] = entry
         return entries
@@ -458,7 +479,8 @@ class Collection:
                 self._parquet_files[key] = pq.ParquetFile(_buffer(get_bytes(self.store, path)))
             else:
                 handle = StoreFile(self.store, path, entry.size)
-                self._parquet_files[key] = pq.ParquetFile(handle)
+                # A read-only seekable file is all `ParquetFile` uses; the stub asks for `IO`.
+                self._parquet_files[key] = pq.ParquetFile(cast("IO[bytes]", handle))
                 self._part_files[key] = handle
         return self._parquet_files[key]
 
@@ -595,7 +617,7 @@ class Collection:
         vertices, faces = concatenate_and_weld(pieces)
         return Mesh(vertices=vertices, faces=faces)
 
-    def cell_box(self, level: int, cell: int) -> tuple[np.ndarray, np.ndarray]:
+    def cell_box(self, level: int, cell: int) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """The grid box a cell addresses: its origin and its extent, in voxels."""
         return cell_box(int(cell), int(level), self.grid.cell_size)
 
@@ -694,7 +716,7 @@ class Collection:
             handle = StoreFile(self.store, path, entry.size)
             start, length = handle.tail_window()
             handle.prime_tail(await aget_range_bytes(self.store, path, start, length))
-            self._parquet_files[key] = pq.ParquetFile(handle)
+            self._parquet_files[key] = pq.ParquetFile(cast("IO[bytes]", handle))
             self._part_files[key] = handle
 
     async def _aprefetch(self, level: int, part: int, row_group: int) -> None:

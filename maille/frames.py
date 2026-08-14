@@ -11,9 +11,17 @@ alongside -- so a check tests that the required columns are present, never that 
 from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
-from typing import Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from maille.errors import FormatError, MissingExtraError
+
+if TYPE_CHECKING:  # pragma: no cover - typing only
+    import pyarrow as pa
+
+#: What Parquet itself may compress a *file* with -- a separate thing from the format's
+#: ``encoding.compression``, which describes each geometry blob inside a row. Spelled as the
+#: codec names pyarrow accepts, so a misspelling is a type error rather than a runtime one.
+ParquetCompression = Literal["none", "snappy", "gzip", "brotli", "lz4", "zstd"]
 
 #: The columns each role must carry, used to check a frame before an upload is spent on it.
 #: A server checks the same names (plus their types) with a DuckDB ``DESCRIBE``; this is the
@@ -50,7 +58,7 @@ def require_pyarrow() -> Any:  # noqa: ANN401
     return pyarrow
 
 
-def arrow_schemas() -> dict[str, Any]:
+def arrow_schemas() -> dict[str, pa.Schema]:
     """The three Arrow schemas, spelled so a DuckDB ``DESCRIBE`` prints what a server accepts."""
     pa = require_pyarrow()
     bbox = [
@@ -99,7 +107,7 @@ def arrow_schemas() -> dict[str, Any]:
     }
 
 
-def build_table(rows: Sequence[Mapping[str, Any]], schema: Any) -> Any:  # noqa: ANN401
+def build_table(rows: Sequence[Mapping[str, Any]], schema: pa.Schema) -> pa.Table:
     """Build an Arrow table from row dicts under a fixed schema, empty rows included."""
     pa = require_pyarrow()
     columns = {field.name: [row[field.name] for row in rows] for field in schema}
@@ -141,7 +149,7 @@ def _column_names(table: Any) -> Iterable[str]:  # noqa: ANN401
     raise FormatError(f"maille cannot read column names off a {type(table).__name__}.")
 
 
-def table_to_parquet(table: Any, *, compression: str = "zstd") -> bytes:  # noqa: ANN401
+def table_to_parquet(table: pa.Table, *, compression: ParquetCompression = "zstd") -> bytes:
     """Serialize an Arrow table to Parquet bytes.
 
     The Parquet-level compression is the *file's*, and is a separate thing from the format's:
@@ -172,7 +180,7 @@ def table_to_parquet(table: Any, *, compression: str = "zstd") -> bytes:  # noqa
 DEFAULT_ROW_GROUP_BYTES = 512 * 1024
 
 
-def blob_sizes(table: Any) -> list[int]:  # noqa: ANN401
+def blob_sizes(table: pa.Table) -> list[int]:
     """How many bytes of geometry each row of a shard carries.
 
     Budgeting on the blobs rather than on a row count is what keeps chunks even: a cell holding
@@ -206,10 +214,10 @@ def plan_byte_chunks(sizes: Sequence[int], budget: int) -> list[tuple[int, int]]
 
 
 def table_to_chunked_parquet(
-    table: Any,  # noqa: ANN401
+    table: pa.Table,
     *,
     row_group_bytes: int = DEFAULT_ROW_GROUP_BYTES,
-    compression: str = "zstd",
+    compression: ParquetCompression = "zstd",
 ) -> tuple[bytes, list[tuple[int, int]]]:
     """Serialize a geometry shard with one row group per byte-budgeted run of cells.
 

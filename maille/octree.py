@@ -21,6 +21,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import numpy as np
+import numpy.typing as npt
 
 #: The largest Morton code the format allows, and the per-axis index width that keeps us under
 #: it: three axes at 17 bits interleave to 51.
@@ -28,7 +29,7 @@ MORTON_BITS = 17
 MAX_MORTON = 1 << 53
 
 
-def _spread_bits(value: np.ndarray) -> np.ndarray:
+def _spread_bits(value: npt.NDArray[np.int64]) -> npt.NDArray[np.int64]:
     """Insert two zero bits after each of the low 17 bits, for a 3D Morton interleave."""
     result = np.zeros_like(value, dtype=np.int64)
     for bit in range(MORTON_BITS):
@@ -36,7 +37,7 @@ def _spread_bits(value: np.ndarray) -> np.ndarray:
     return result
 
 
-def morton_encode(triples: np.ndarray) -> np.ndarray:
+def morton_encode(triples: npt.ArrayLike) -> npt.NDArray[np.int64]:
     """Morton codes for an ``(n, 3)`` array of ``(i, j, k)`` cell indices, x least significant."""
     triples = np.asarray(triples, dtype=np.int64)
     if triples.ndim != 2 or triples.shape[1] != 3:
@@ -69,7 +70,9 @@ def morton_decode(code: int) -> tuple[int, int, int]:
     return i, j, k
 
 
-def cell_box(cell: int, level: int, cell_size: Sequence[int]) -> tuple[np.ndarray, np.ndarray]:
+def cell_box(
+    cell: int, level: int, cell_size: Sequence[int]
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
     """The grid box of a cell: its origin and its extent, in voxels, ``(x, y, z)``.
 
     This is what makes the quantization invertible from the row alone: a decoder that has

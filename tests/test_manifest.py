@@ -7,7 +7,7 @@ import json
 import pytest
 
 import maille
-from maille.manifest import Encoding, Grid, Manifest, level_part_path, level_prefix, validate_axes
+from maille.manifest import Encoding, Grid, Manifest, level_part_path, level_prefix
 
 
 def a_manifest(**overrides: object) -> dict:
@@ -26,7 +26,6 @@ def a_manifest(**overrides: object) -> dict:
             "boundary": "LOCKED",
             "decimation": "QUARTER",
         },
-        "axes": ["z", "y", "x"],
         "counts": {"objects": 3, "cellsPerLevel": [34, 8, 1]},
         "files": {"cells": "catalog/cells.parquet", "objects": "catalog/objects.parquet"},
     }
@@ -57,7 +56,7 @@ def test_the_stored_encoding_is_resolved_rather_than_sparse():
     Defaulting a key inside the writer without persisting it would hand every reader an
     encoding that says nothing -- which is the one implementation trap in this design.
     """
-    written = json.loads(Manifest(grid=Grid((128, 128, 64), 3), encoding=Encoding(), axes=("z", "y", "x")).to_json())
+    written = json.loads(Manifest(grid=Grid((128, 128, 64), 3), encoding=Encoding()).to_json())
 
     assert set(written["encoding"]) == {
         "positions", "indices", "codec", "compression", "boundary", "decimation",
@@ -130,48 +129,31 @@ def test_the_cell_size_is_read_in_x_y_z_and_not_reversed():
     assert grid.cell_extent(2) == (512.0, 512.0, 256.0)
 
 
-def test_axes_is_checked_but_never_invented():
-    """Any order is accepted -- a collection owns its coordinate system -- but not a broken one."""
-    assert validate_axes(["z", "y", "x"]) == ("z", "y", "x")
-    assert validate_axes(["x", "y", "z"]) == ("x", "y", "z")
+def test_a_manifest_key_this_reader_does_not_know_is_ignored_rather_than_refused():
+    """A layer above may record something of its own beside the format's keys.
 
-    with pytest.raises(maille.FormatError, match="names 3 axes"):
-        validate_axes(["z", "y"])
-    with pytest.raises(maille.FormatError, match="names each axis once"):
-        validate_axes(["y", "y", "x"])
-
-
-def test_a_manifest_without_axes_is_read_in_full():
-    """Nothing in the format decodes through `axes`, so a manifest without it is complete.
-
-    The grid and the encoding are what a reader cannot work without, and they are refused when
-    missing. An axis order is a claim by the layer above about how this collection relates to
-    something else -- so its absence means that layer made no claim, not that the collection is
-    unreadable.
+    This is also what keeps an older collection readable: manifests written while the format
+    still carried an ``axes`` declaration open unchanged, and the key is simply not carried into
+    what this reader writes back.
     """
-    raw = a_manifest()
-    del raw["axes"]
+    manifest = Manifest.from_dict(a_manifest(axes=["z", "y", "x"], somethingElse={"any": "shape"}))
 
-    manifest = Manifest.from_dict(raw)
-
-    assert manifest.axes is None
     assert manifest.grid.cell_size == (128, 128, 64)
-    assert "axes" not in manifest.to_dict(), "an absent claim must not become a written one"
-    assert Manifest.from_json(manifest.to_json()).axes is None
+    assert set(manifest.to_dict()) == {"specVersion", "grid", "encoding", "counts", "files"}
 
 
-def test_a_malformed_axes_claim_is_still_refused():
-    """Optional does not mean unchecked: a present-but-wrong claim is a mistake to name."""
-    with pytest.raises(maille.FormatError, match="names 3 axes"):
-        Manifest.from_dict(a_manifest(axes=["z", "y"]))
-    with pytest.raises(maille.FormatError, match="names each axis once"):
-        Manifest.from_dict(a_manifest(axes=["y", "y", "x"]))
+def test_the_manifest_states_nothing_about_what_a_component_means():
+    """Everything maille computes is positional, so naming the axes is a claim it cannot own.
 
+    Which physical axis a slot holds is a statement about this collection's relationship to the
+    image it came from, and that relationship lives in whatever owns the coordinate system. A
+    key here would be a claim nothing in the format could check, use or contradict -- so there
+    is none, and its absence is not an omission to fill in later.
+    """
+    written = Manifest(grid=Grid((128, 128, 64), 3), encoding=Encoding()).to_dict()
 
-def test_a_declared_axis_order_is_carried_through_untouched():
-    """maille never reorders or normalises it -- any order is the caller's to state."""
-    for order in (["z", "y", "x"], ["x", "y", "z"], ["c", "a", "b"]):
-        assert list(Manifest.from_dict(a_manifest(axes=order)).to_dict()["axes"]) == order
+    assert "axes" not in written
+    assert set(written) == {"specVersion", "grid", "encoding", "counts", "files"}
 
 
 def test_both_blob_knobs_default_to_nothing():

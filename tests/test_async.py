@@ -21,7 +21,7 @@ import pytest
 import trimesh
 
 import maille
-from tests.conftest import AXES, CELL_SIZE, LEVELS
+from tests.conftest import CELL_SIZE, LEVELS
 
 ROW_GROUP_BYTES = 16 * 1024
 
@@ -78,7 +78,7 @@ def many(many_objects: dict[int, Any]) -> maille.MeshCollection:
     """The larger collection, built once."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return maille.build_collection(many_objects, axes=AXES, cell_size=CELL_SIZE, levels=LEVELS)
+        return maille.build_collection(many_objects, cell_size=CELL_SIZE, levels=LEVELS)
 
 
 @pytest.fixture()

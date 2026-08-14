@@ -23,7 +23,7 @@ import pytest
 import trimesh
 
 import maille
-from tests.conftest import AXES, CELL_SIZE, LEVELS, AccountingStore
+from tests.conftest import CELL_SIZE, LEVELS, AccountingStore
 
 #: Small enough that the fixture's level 0 lands in several row groups. The default is sized
 #: for real collections, and a fixture big enough to split at the default would make the suite
@@ -59,7 +59,7 @@ def wide(wide_objects: dict[int, Any]) -> maille.MeshCollection:
     """The larger collection, built once for the whole session."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        return maille.build_collection(wide_objects, axes=AXES, cell_size=CELL_SIZE, levels=LEVELS)
+        return maille.build_collection(wide_objects, cell_size=CELL_SIZE, levels=LEVELS)
 
 
 @pytest.fixture()
@@ -363,10 +363,9 @@ def test_the_round_trip_is_unchanged_by_how_finely_it_was_chunked(collection: ma
         assert left.object_ids == right.object_ids
 
 
-def test_the_axes_and_the_grid_survive_a_chunked_write(chunked: AccountingStore):
+def test_the_grid_survives_a_chunked_write(chunked: AccountingStore):
     """The declarations are the collection's identity; chunking is about bytes, not meaning."""
     opened = maille.open_collection(chunked, "c")
 
-    assert opened.axes == AXES
     assert opened.grid.cell_size == CELL_SIZE
     assert opened.grid.levels == LEVELS

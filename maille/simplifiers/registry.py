@@ -11,6 +11,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
 from maille.errors import FormatError
 from maille.simplifiers.greedy import SIMPLIFICATION_GREEDY, GreedyEdgeCollapse
@@ -21,7 +22,7 @@ from maille.simplifiers.quadric import SIMPLIFICATION_QUADRIC, QuadricSimplifier
 SIMPLIFICATION_DEFAULT = SIMPLIFICATION_QUADRIC
 
 #: Every backend that ships, keyed by the ``simplification`` value that selects it.
-_SIMPLIFIERS: dict[str, type] = {
+_SIMPLIFIERS: dict[str, type[Simplifier]] = {
     SIMPLIFICATION_QUADRIC: QuadricSimplifier,
     SIMPLIFICATION_GREEDY: GreedyEdgeCollapse,
 }
@@ -64,10 +65,10 @@ def resolve_simplifier(simplifier: Any) -> Simplifier:  # noqa: ANN401
 
 def simplify_to_target(
     simplifier: Simplifier,
-    vertices: np.ndarray,
-    faces: np.ndarray,
+    vertices: npt.NDArray[np.float64],
+    faces: npt.NDArray[np.int64],
     *,
-    fixed: np.ndarray,
+    fixed: npt.NDArray[np.bool_],
     target_faces: int,
 ) -> tuple[Simplified, bool]:
     """Simplify to ``target_faces``, relaxing the target if that target destroys the surface.

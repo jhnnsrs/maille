@@ -19,6 +19,7 @@ from __future__ import annotations
 from typing import Protocol
 
 import numpy as np
+import numpy.typing as npt
 
 
 class BlobCodec(Protocol):
@@ -31,11 +32,13 @@ class BlobCodec(Protocol):
     #: The ``encoding.codec`` value that selects this implementation.
     name: str
 
-    def encode_positions(self, quantized: np.ndarray, *, compression: str) -> bytes:
+    def encode_positions(self, quantized: npt.NDArray[np.uint16], *, compression: str) -> bytes:
         """Pack an ``(n, 3)`` array of ``uint16`` quantized coordinates into a blob."""
         ...
 
-    def decode_positions(self, blob: bytes, *, compression: str, vertex_count: int | None) -> np.ndarray:
+    def decode_positions(
+        self, blob: bytes, *, compression: str, vertex_count: int | None
+    ) -> npt.NDArray[np.uint16]:
         """Unpack a positions blob back into the ``(n, 3)`` ``uint16`` array that went in.
 
         ``vertex_count`` comes from the geometry row. Whether it is required or merely checked
@@ -44,7 +47,7 @@ class BlobCodec(Protocol):
         """
         ...
 
-    def encode_indices(self, faces: np.ndarray, *, compression: str, vertex_count: int | None) -> bytes:
+    def encode_indices(self, faces: npt.NDArray[np.uint32], *, compression: str, vertex_count: int | None) -> bytes:
         """Pack an ``(m, 3)`` triangle array into a blob, preserving triangle order.
 
         Order is not cosmetic: ``object_index_offsets`` names ranges into the concatenated
@@ -53,7 +56,9 @@ class BlobCodec(Protocol):
         """
         ...
 
-    def decode_indices(self, blob: bytes, *, compression: str, index_count: int | None) -> np.ndarray:
+    def decode_indices(
+        self, blob: bytes, *, compression: str, index_count: int | None
+    ) -> npt.NDArray[np.int64]:
         """Unpack an indices blob back into an ``(m, 3)`` triangle array."""
         ...
 

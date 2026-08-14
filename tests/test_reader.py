@@ -8,7 +8,7 @@ import numpy as np
 import pytest
 
 import maille
-from tests.conftest import AXES, CELL_SIZE, LEVELS
+from tests.conftest import CELL_SIZE, LEVELS
 
 
 def test_opening_reads_the_manifest_and_nothing_else(written: maille.MemoryStore):
@@ -38,7 +38,6 @@ def test_the_declarations_survive_the_round_trip(collection: maille.MeshCollecti
     assert opened.manifest.spec_version == maille.SPEC_VERSION
     assert opened.grid.cell_size == CELL_SIZE
     assert opened.grid.levels == LEVELS
-    assert opened.axes == AXES
     assert opened.encoding.to_dict() == collection.manifest.encoding.to_dict()
     assert opened.manifest.counts["objects"] == collection.object_catalog.num_rows
 

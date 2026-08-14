@@ -383,26 +383,19 @@ class Manifest:
 
     grid: Grid
     encoding: Encoding
-    #: Optional, and carried rather than used -- see :func:`validate_axes`. Omitted from the
-    #: written manifest when unset, because a key that is absent says "this layer did not
-    #: claim an axis order" where a guessed one says something false.
-    axes: tuple[str, ...] | None = None
     spec_version: str = SPEC_VERSION
     counts: dict[str, Any] = field(default_factory=dict)
     files: dict[str, Any] = field(default_factory=dict)
 
     def to_dict(self) -> dict[str, Any]:
         """The manifest as it is written, with the resolved declarations rather than the input."""
-        written: dict[str, Any] = {
+        return {
             "specVersion": self.spec_version,
             "grid": self.grid.to_dict(),
             "encoding": self.encoding.to_dict(),
+            "counts": dict(self.counts),
+            "files": dict(self.files),
         }
-        if self.axes is not None:
-            written["axes"] = list(self.axes)
-        written["counts"] = dict(self.counts)
-        written["files"] = dict(self.files)
-        return written
 
     def to_json(self) -> bytes:
         """The manifest's bytes, as they land at the root of the prefix."""
@@ -424,16 +417,12 @@ class Manifest:
                 "A manifest must carry a `grid` and an `encoding` object: they are how a reader turns a Morton code "
                 "into a box and the blobs into geometry, and nothing else in the store states them."
             )
-        # Absent is a legitimate manifest: nothing in the format is decoded through `axes`, so a
-        # collection that never claimed an axis order is readable in full. Present but malformed
-        # is not -- that is a layer above stating something it got wrong.
-        axes = raw.get("axes")
-        if axes is not None:
-            axes = validate_axes(axes)
+        # Keys this reader does not know are ignored rather than refused -- a manifest written
+        # by a layer that recorded something of its own stays readable, and an older one that
+        # carried an `axes` declaration opens unchanged.
         return cls(
             grid=Grid.from_dict(grid),
             encoding=Encoding.from_dict(encoding),
-            axes=axes,
             spec_version=version,
             counts=dict(raw.get("counts") or {}),
             files=dict(raw.get("files") or {}),
@@ -474,34 +463,6 @@ class Manifest:
         return cls.from_dict(raw)
 
 
-def validate_axes(axes: Sequence[str]) -> tuple[str, ...]:
-    """Check an axis order a caller chose to declare. maille never invents one.
-
-    **``axes`` is optional, and nothing here reads it.** Everything maille computes is
-    positional ``(x, y, z)`` and self-consistent without any names at all: vertex components,
-    ``cell_size``, the ``bbox_*_x/y/z`` columns and the Morton interleave. A collection with no
-    declared axes decodes identically to one that declares them.
-
-    It exists because *naming* those axes is a question about the collection's relationship to
-    something else -- the image it was extracted from, the coordinate graph it is placed in --
-    and that relationship lives a layer up, in whatever owns the coordinate system. Only that
-    layer can say whether the order matches its source, and where it does not the honest place
-    to record it is the derivation edge between the two spaces (a ``MAP_AXIS`` naming each axis
-    on both sides), never a reordered ``cell_size``.
-
-    So a caller who knows the answer passes it and it is carried through to the manifest
-    unchanged; a caller who does not, omits it. Requiring it would be worse than either: a
-    parameter that cannot be reasoned about from the geometry in hand gets filled with a
-    plausible guess, which is exactly the wrong declaration this would be trying to prevent.
-    """
-    if isinstance(axes, str) or len(axes) != 3:
-        raise FormatError(f"A mesh collection is three-dimensional, so `axes` names 3 axes, got {axes!r}.")
-    names = tuple(str(axis) for axis in axes)
-    if len(set(names)) != 3:
-        raise FormatError(f"`axes` names each axis once, got {names!r}.")
-    return names
-
-
 __all__ = [
     "BOUNDARY_LOCKED",
     "BOUNDARY_OPEN",
@@ -528,5 +489,4 @@ __all__ = [
     "Manifest",
     "level_part_path",
     "level_prefix",
-    "validate_axes",
 ]

@@ -19,6 +19,7 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from maille.build import MeshCollection, build_collection
+from maille.errors import FormatError
 from maille.frames import (
     DEFAULT_ROW_GROUP_BYTES,
     blob_sizes,
@@ -48,6 +49,26 @@ if TYPE_CHECKING:  # pragma: no cover - typing only
 DEFAULT_MAX_PART_BYTES = 512 * 1024 * 1024
 
 
+def _keys(table: pa.Table) -> list[tuple[int, int]]:
+    """The ``(level, cell)`` key of every row, refusing a row that has none.
+
+    Both columns are non-null in the schema a server checks, and a row without a key is a row
+    no reader could locate, fetch or verify -- so it is named here rather than written out as a
+    cell addressed ``(0, 0)``.
+    """
+    levels = table.column("level").to_pylist()
+    cells = table.column("cell").to_pylist()
+    keys: list[tuple[int, int]] = []
+    for row, (level, cell) in enumerate(zip(levels, cells)):
+        if level is None or cell is None:
+            raise FormatError(
+                f"Row {row} of this frame holds null in `level` or `cell`. Both are non-null in the "
+                f"format's schema, and a row without that key names no cell at all."
+            )
+        keys.append((int(level), int(cell)))
+    return keys
+
+
 def _plan_parts(shard: pa.Table, max_part_bytes: int) -> list[pa.Table]:
     """Split one level's rows into parts, budgeting on the blob bytes each row carries.
 
@@ -64,13 +85,12 @@ def _plan_parts(shard: pa.Table, max_part_bytes: int) -> list[pa.Table]:
 
 def _locate(shard: pa.Table, part: int, chunks: Sequence[tuple[int, int]]) -> dict[tuple[int, int], tuple[int, int, int]]:
     """Map each cell in a written part to the part and row group a reader must fetch for it."""
-    levels = shard.column("level").to_pylist()
-    cells = shard.column("cell").to_pylist()
+    keys = _keys(shard)
     sizes = blob_sizes(shard)
     found: dict[tuple[int, int], tuple[int, int, int]] = {}
     for group, (start, count) in enumerate(chunks):
         for row in range(start, start + count):
-            found[(int(levels[row]), int(cells[row]))] = (part, group, sizes[row])
+            found[keys[row]] = (part, group, sizes[row])
     return found
 
 
@@ -84,8 +104,7 @@ def _with_locators(catalog: pa.Table, locators: Mapping[tuple[int, int], tuple[i
     """
     import pyarrow as pa
 
-    keys = list(zip(catalog.column("level").to_pylist(), catalog.column("cell").to_pylist()))
-    resolved = [locators.get((int(level), int(cell))) for level, cell in keys]
+    resolved = [locators.get(key) for key in _keys(catalog)]
     columns = {
         "part": pa.array([None if item is None else item[0] for item in resolved], type=pa.int32()),
         "row_group": pa.array([None if item is None else item[1] for item in resolved], type=pa.int32()),
@@ -183,7 +202,6 @@ def write_meshes(
     store: MailleStore,
     prefix: str = "",
     *,
-    axes: Sequence[str] | None = None,
     cell_size: Sequence[int] | None = None,
     levels: int = 3,
     codec: str | None = None,
@@ -204,7 +222,6 @@ def write_meshes(
 
     collection = build_collection(
         objects,
-        axes=axes,
         cell_size=cell_size,
         levels=levels,
         codec=codec or CODEC_NONE,

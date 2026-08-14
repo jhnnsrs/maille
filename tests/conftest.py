@@ -21,9 +21,6 @@ import maille
 #: Deliberately asymmetric: a symmetric one passes a reversed implementation.
 CELL_SIZE = (128, 128, 64)
 
-#: The axis order the fixtures declare. maille never defaults this, so every test states it.
-AXES = ("z", "y", "x")
-
 LEVELS = 3
 
 
@@ -51,7 +48,7 @@ def collection(objects: dict[int, Any]) -> maille.MeshCollection:
     """A built collection, shared across the suite because building it is the slow part."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")  # the QUARTER warning is asserted on where it matters
-        return maille.build_collection(objects, axes=AXES, cell_size=CELL_SIZE, levels=LEVELS)
+        return maille.build_collection(objects, cell_size=CELL_SIZE, levels=LEVELS)
 
 
 @pytest.fixture(scope="session")

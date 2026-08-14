@@ -2,7 +2,9 @@
 
 Two shapes are accepted, and they are the same shape underneath:
 
-- a ``trimesh.Trimesh``, which is what a mesh extractor usually hands you;
+- anything carrying ``.vertices`` and ``.faces`` -- a ``trimesh.Trimesh`` is what a mesh
+  extractor usually hands you, and :class:`HasVerticesAndFaces` is that requirement written
+  down rather than the concrete class;
 - a plain ``(vertices, faces)`` pair of numpy arrays, for a caller who already has them and
   should not need trimesh in *their* code to pass them.
 
@@ -16,24 +18,47 @@ from __future__ import annotations
 
 from collections.abc import Mapping, Sequence
 from dataclasses import dataclass
-from typing import Any, Union
+from typing import Any, Protocol, Union, runtime_checkable
 
 import numpy as np
+import numpy.typing as npt
 import trimesh
 
+
+@runtime_checkable
+class HasVerticesAndFaces(Protocol):
+    """Anything carrying ``.vertices`` and ``.faces``, which is what a mesh is here.
+
+    Stated as a protocol rather than as ``trimesh.Trimesh`` because that is what
+    :func:`coerce_mesh` actually asks for: a ``Trimesh`` satisfies it, and so does a scene
+    object, a subclass, or whatever else a caller's own pipeline hands around. Narrowing this
+    to the concrete class would reject calls the code deliberately supports.
+    """
+
+    @property
+    def vertices(self) -> Any:  # noqa: ANN401 - array-like, and every library spells it differently
+        """The ``(n, 3)`` vertex positions."""
+        ...
+
+    @property
+    def faces(self) -> Any:  # noqa: ANN401 - array-like, and every library spells it differently
+        """The ``(m, 3)`` triangle indices."""
+        ...
+
+
 #: Anything the builder accepts as one object's geometry.
-MeshSource = Union["Mesh", Any, tuple[Any, Any]]
+MeshSource = Union["Mesh", HasVerticesAndFaces, tuple[npt.ArrayLike, npt.ArrayLike]]
 
 
 @dataclass(frozen=True)
 class Mesh:
     """One object's surface: ``(n, 3)`` float vertices in voxels and ``(m, 3)`` int faces."""
 
-    vertices: np.ndarray
-    faces: np.ndarray
+    vertices: npt.NDArray[np.float64]
+    faces: npt.NDArray[np.int64]
 
     @property
-    def bounds(self) -> tuple[np.ndarray, np.ndarray]:
+    def bounds(self) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]:
         """The axis-aligned bounds, as ``(low, high)``, matching trimesh's attribute."""
         if not len(self.vertices):
             zeros = np.zeros(3, dtype=np.float64)
@@ -52,8 +77,8 @@ class Mesh:
 def coerce_mesh(source: MeshSource) -> Mesh:
     """Turn whatever was passed for one object into vertices and faces.
 
-    Accepts a :class:`Mesh`, a ``trimesh.Trimesh`` (anything carrying ``.vertices`` and
-    ``.faces``), or a ``(vertices, faces)`` pair.
+    Accepts a :class:`Mesh`, anything satisfying :class:`HasVerticesAndFaces` (a
+    ``trimesh.Trimesh``, most often), or a ``(vertices, faces)`` pair.
     """
     if isinstance(source, Mesh):
         return source
@@ -98,4 +123,4 @@ def coerce_objects(objects: Mapping[int, MeshSource]) -> dict[int, Mesh]:
     return coerced
 
 
-__all__ = ["Mesh", "MeshSource", "coerce_mesh", "coerce_objects"]
+__all__ = ["HasVerticesAndFaces", "Mesh", "MeshSource", "coerce_mesh", "coerce_objects"]

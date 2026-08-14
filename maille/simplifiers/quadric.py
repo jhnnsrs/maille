@@ -10,6 +10,7 @@ from dataclasses import dataclass, field
 
 import fast_simplification
 import numpy as np
+import numpy.typing as npt
 
 from maille.simplifiers.greedy import GreedyEdgeCollapse
 from maille.simplifiers.measure import boundary_held, measure_deviation
@@ -62,10 +63,10 @@ class QuadricSimplifier:
 
     def simplify(
         self,
-        vertices: np.ndarray,
-        faces: np.ndarray,
+        vertices: npt.NDArray[np.float64],
+        faces: npt.NDArray[np.int64],
         *,
-        fixed: np.ndarray,
+        fixed: npt.NDArray[np.bool_],
         target_faces: int,
     ) -> Simplified:
         """Collapse to the face budget, then check the boundary really did stay put."""

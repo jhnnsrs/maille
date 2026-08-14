@@ -11,7 +11,7 @@ import trimesh
 
 import maille
 from maille.stores import DirectoryStore
-from tests.conftest import AXES, CELL_SIZE
+from tests.conftest import CELL_SIZE
 
 
 class RecordingStore(maille.MemoryStore):
@@ -150,7 +150,7 @@ def test_the_declared_index_width_is_the_one_the_blobs_use():
     objects = {1: trimesh.creation.icosphere(radius=20.0).apply_translation([64.0, 64.0, 32.0])}
 
     raw = maille.build_collection(
-        objects, axes=AXES, cell_size=(128, 128, 64), levels=1, codec=maille.CODEC_NONE
+        objects, cell_size=(128, 128, 64), levels=1, codec=maille.CODEC_NONE
     )
 
     assert raw.encoding.indices == maille.INDICES_UINT32
@@ -173,7 +173,7 @@ def test_write_meshes_builds_and_writes_in_one_call(objects: dict, tmp_path: Pat
     """The convenience form, and the one most callers will use."""
     store = DirectoryStore(tmp_path)
 
-    manifest = maille.write_meshes(objects, store, "c", axes=AXES, cell_size=CELL_SIZE, levels=2)
+    manifest = maille.write_meshes(objects, store, "c", cell_size=CELL_SIZE, levels=2)
 
     assert manifest.spec_version == maille.SPEC_VERSION
     assert manifest.grid.levels == 2

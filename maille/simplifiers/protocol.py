@@ -11,14 +11,15 @@ from dataclasses import dataclass
 from typing import Protocol, runtime_checkable
 
 import numpy as np
+import numpy.typing as npt
 
 
 @dataclass(frozen=True)
 class Simplified:
     """What a simplifier returns: the coarser surface, and how far it strayed making it."""
 
-    vertices: np.ndarray
-    faces: np.ndarray
+    vertices: npt.NDArray[np.float64]
+    faces: npt.NDArray[np.int64]
     #: An upper bound on how far this surface deviates from the one handed in, in voxels. It
     #: becomes the decimation half of the cell's ``lod_error``, which is what a planner spends
     #: its budget against -- so a backend that cannot measure honestly should over-report.
@@ -58,10 +59,10 @@ class Simplifier(Protocol):
 
     def simplify(
         self,
-        vertices: np.ndarray,
-        faces: np.ndarray,
+        vertices: npt.NDArray[np.float64],
+        faces: npt.NDArray[np.int64],
         *,
-        fixed: np.ndarray,
+        fixed: npt.NDArray[np.bool_],
         target_faces: int,
     ) -> Simplified:
         """Reduce ``faces`` toward ``target_faces`` without moving a fixed vertex."""

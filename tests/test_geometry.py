@@ -131,7 +131,7 @@ def test_a_small_object_is_not_decimated_out_of_existence():
     """
     tiny = trimesh.creation.box(extents=[6.0, 4.0, 3.0]).apply_translation([40.0, 40.0, 20.0])
 
-    collection = maille.build_collection({5: tiny}, axes=("z", "y", "x"), cell_size=(128, 128, 64), levels=3)
+    collection = maille.build_collection({5: tiny}, cell_size=(128, 128, 64), levels=3)
 
     for level, shard in collection.shards:
         assert shard.num_rows > 0, f"level {level} lost the only object in the collection"

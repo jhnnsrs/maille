@@ -16,6 +16,7 @@ from __future__ import annotations
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 
 from maille.errors import FormatError, MissingExtraError
 from maille.manifest import CODEC_MESHOPT, CODEC_NONE
@@ -38,7 +39,7 @@ def require_meshoptimizer() -> Any:  # noqa: ANN401
     return meshoptimizer
 
 
-def _decode_vertices(module: Any, blob: bytes, vertex_count: int) -> np.ndarray:  # noqa: ANN401
+def _decode_vertices(module: Any, blob: bytes, vertex_count: int) -> npt.NDArray[np.uint16]:  # noqa: ANN401
     """Decode a meshopt vertex buffer to ``(n, 4)`` uint16, avoiding the binding's unsafe path.
 
     ``meshoptimizer.decode_vertex_buffer`` takes a ``dtype`` argument, and **it must not be
@@ -61,7 +62,7 @@ class MeshoptCodec:
         """Name the manifest value this implements."""
         return f"MeshoptCodec({self.name!r})"
 
-    def encode_positions(self, quantized: np.ndarray, *, compression: str) -> bytes:
+    def encode_positions(self, quantized: npt.NDArray[np.uint16], *, compression: str) -> bytes:
         """Pad each triple to four components and run meshopt's vertex codec over them.
 
         The padding is not an invention: meshopt's codec requires a stride that is a multiple of
@@ -75,7 +76,9 @@ class MeshoptCodec:
         padded[:, :3] = quantized
         return bytes(module.encode_vertex_buffer(np.ascontiguousarray(padded), len(padded), STRIDE))
 
-    def decode_positions(self, blob: bytes, *, compression: str, vertex_count: int | None) -> np.ndarray:
+    def decode_positions(
+        self, blob: bytes, *, compression: str, vertex_count: int | None
+    ) -> npt.NDArray[np.uint16]:
         """Decode the vertex buffer and drop the padding component."""
         del compression
         if vertex_count is None:
@@ -86,7 +89,7 @@ class MeshoptCodec:
         module = require_meshoptimizer()
         return _decode_vertices(module, blob, vertex_count)[:, :3]
 
-    def encode_indices(self, faces: np.ndarray, *, compression: str, vertex_count: int | None) -> bytes:
+    def encode_indices(self, faces: npt.NDArray[np.uint32], *, compression: str, vertex_count: int | None) -> bytes:
         """Run meshopt's index codec over the triangle list, in the order it was handed over."""
         del compression
         module = require_meshoptimizer()
@@ -95,7 +98,9 @@ class MeshoptCodec:
             vertex_count = int(faces.max()) + 1 if faces.size else 0
         return bytes(module.encode_index_buffer(np.ascontiguousarray(faces.reshape(-1)), faces.size, vertex_count))
 
-    def decode_indices(self, blob: bytes, *, compression: str, index_count: int | None) -> np.ndarray:
+    def decode_indices(
+        self, blob: bytes, *, compression: str, index_count: int | None
+    ) -> npt.NDArray[np.int64]:
         """Decode the index buffer back into ``(m, 3)`` triangles."""
         del compression
         if index_count is None:

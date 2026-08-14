@@ -44,6 +44,12 @@ dev-dependencies = [
     "ruff>0.11",
     "basedpyright>=1.21",
     "obstore>=0.10",
+    # pyarrow ships no type information of its own, so these stubs are what holds the frames,
+    # the reader and the writer to the full strict rule set rather than to `Unknown`. They
+    # describe a newer pyarrow than the `>=12` floor above, which is deliberate and safe here:
+    # maille only calls `table`/`field`/`schema`, the two Parquet writers, `ParquetFile` and
+    # the buffer types, all of which predate 12 and have not changed shape since.
+    "pyarrow-stubs>=20.0.0.20260625",
 ]
 
 [tool.hatch.build.targets.sdist]
@@ -55,7 +61,17 @@ include = ["maille"]
 [tool.basedpyright]
 include = ["maille"]
 exclude = ["**/__pycache__", "tests"]
-typeCheckingMode = "standard"
+typeCheckingMode = "strict"
+# trimesh, fast-simplification and scipy ship no type information, so every value that comes
+# back through them is Unknown no matter what maille annotates. These four rules would then
+# report the *dependency's* silence at each of maille's call sites, which casts could only
+# paper over -- so they are off, and every other strict rule stays on. pyarrow is typed here
+# through `pyarrow-stubs`, which is why the frames, reader and writer are held to the full set.
+reportUnknownMemberType = false
+reportUnknownArgumentType = false
+reportUnknownVariableType = false
+reportUnknownParameterType = false
+reportMissingTypeStubs = false
 
 [tool.ruff.lint]
 extend-select = ["ANN", "D1"]

@@ -19,7 +19,7 @@ import pytest
 import maille
 from maille.frames import parquet_to_table, table_to_parquet
 from maille.verify import TIERS, verify
-from tests.conftest import AXES, CELL_SIZE, LEVELS
+from tests.conftest import CELL_SIZE, LEVELS
 
 
 @pytest.fixture()
@@ -318,22 +318,11 @@ def test_the_report_reads_as_something_a_person_would_read(sound: maille.MemoryS
     assert any(check.examples for check in report.failures), "a failure should name what failed"
 
 
-def test_a_collection_with_no_axes_declared_still_verifies(objects: dict[int, Any]):
-    """``axes`` is carried and never read, so its absence must not trouble a checker either."""
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        built = maille.build_collection(objects, cell_size=CELL_SIZE, levels=LEVELS)
-    store = maille.MemoryStore()
-    maille.write_collection(built, store, "c")
-
-    assert verify(maille.open_collection(store, "c"), tier="geometry").ok
-
-
 def test_a_single_level_collection_verifies(objects: dict[int, Any]):
     """One level means no cross-level claims to check, which must be a pass and not a crash."""
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        built = maille.build_collection(objects, axes=AXES, cell_size=CELL_SIZE, levels=1)
+        built = maille.build_collection(objects, cell_size=CELL_SIZE, levels=1)
     store = maille.MemoryStore()
     maille.write_collection(built, store, "c")
 

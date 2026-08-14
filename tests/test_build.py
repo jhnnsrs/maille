@@ -15,7 +15,7 @@ import pytest
 import trimesh
 
 import maille
-from tests.conftest import AXES, CELL_SIZE, LEVELS
+from tests.conftest import CELL_SIZE, LEVELS
 
 
 def test_geometry_round_trips_through_an_anisotropic_grid(collection: maille.MeshCollection, objects: dict):
@@ -57,47 +57,22 @@ def test_a_cell_addresses_the_box_its_geometry_actually_occupies(collection: mai
         assert (cell.vertices <= origin + extent + 1e-6).all(), f"cell {entry.cell} at level {entry.level} spills high"
 
 
-def test_axes_is_optional_and_nothing_decodes_through_it():
-    """maille computes in positional (x, y, z) and never reads a declared axis order.
+def test_the_manifest_makes_no_claim_about_what_the_components_mean():
+    """maille computes in positional (x, y, z) and states nothing about which axis a slot is.
 
-    So a collection written without `axes` is complete: same cells, same blobs, same bytes of
-    geometry as one written with them. Naming the axes is a statement about how the collection
-    relates to whatever it came from, which belongs to the layer that owns the coordinate
-    system -- not to a mesh serializer.
+    Naming those axes is a statement about how the collection relates to whatever it came from,
+    which belongs to the layer that owns the coordinate system -- not to a mesh serializer. A
+    key here would be a claim nothing in the format could check, use or contradict.
     """
     objects = {1: trimesh.creation.icosphere(radius=20.0).apply_translation([64.0, 64.0, 32.0])}
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        anonymous = maille.build_collection(objects, cell_size=(128, 128, 64), levels=2)
-        declared = maille.build_collection(objects, axes=AXES, cell_size=(128, 128, 64), levels=2)
+        built = maille.build_collection(objects, cell_size=(128, 128, 64), levels=2)
 
-    assert anonymous.manifest.axes is None
-    assert declared.manifest.axes == AXES
-    assert anonymous.cell_catalog.to_pylist() == declared.cell_catalog.to_pylist()
-    for (_, without), (_, with_axes) in zip(anonymous.shards, declared.shards):
-        assert without.to_pylist() == with_axes.to_pylist(), "the declared axes changed the geometry"
-
-
-def test_an_undeclared_axis_order_is_absent_rather_than_guessed(collection: maille.MeshCollection):
-    """An absent key says "this layer did not claim an order"; a guessed one says something false."""
-    objects = {1: trimesh.creation.box(extents=[10.0, 10.0, 10.0]).apply_translation([20.0, 20.0, 20.0])}
-
-    with warnings.catch_warnings():
-        warnings.simplefilter("ignore")
-        anonymous = maille.build_collection(objects, cell_size=(64, 64, 64), levels=1)
-
-    assert "axes" not in anonymous.manifest.to_dict()
-
-
-def test_a_declared_axis_order_is_still_checked():
-    """Optional does not mean unvalidated: a malformed claim is a layer above getting it wrong."""
-    objects = {1: trimesh.creation.box(extents=[10.0, 10.0, 10.0]).apply_translation([20.0, 20.0, 20.0])}
-
-    with pytest.raises(maille.FormatError, match="names 3 axes"):
-        maille.build_collection(objects, axes=("z", "y"), cell_size=(64, 64, 64))
-    with pytest.raises(maille.FormatError, match="names each axis once"):
-        maille.build_collection(objects, axes=("z", "z", "x"), cell_size=(64, 64, 64))
+    written = built.manifest.to_dict()
+    assert set(written) == {"specVersion", "grid", "encoding", "counts", "files"}
+    assert "axes" not in written
 
 
 def test_the_encoding_always_states_the_keys_a_decoder_cannot_infer(collection: maille.MeshCollection):
@@ -120,7 +95,7 @@ def test_the_declared_codec_is_the_one_that_was_applied():
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        raw = maille.build_collection(objects, axes=AXES, cell_size=(128, 128, 64), levels=2, codec=maille.CODEC_NONE)
+        raw = maille.build_collection(objects, cell_size=(128, 128, 64), levels=2, codec=maille.CODEC_NONE)
 
     assert raw.manifest.encoding.codec == maille.CODEC_NONE
     row = raw.shards[0][1]
@@ -238,7 +213,7 @@ def test_a_missed_quarter_budget_is_warned_about():
     objects = {1: trimesh.creation.icosphere(radius=40.0, subdivisions=3).apply_translation([80.0, 80.0, 80.0])}
 
     with pytest.warns(UserWarning, match="decimation: QUARTER"):
-        maille.build_collection(objects, axes=AXES, cell_size=(4, 4, 4), levels=2)
+        maille.build_collection(objects, cell_size=(4, 4, 4), levels=2)
 
 
 def test_choosing_a_cell_size_beats_a_cell_smaller_than_the_objects(objects: dict):
@@ -257,8 +232,8 @@ def test_raw_vertex_and_face_arrays_are_accepted_without_trimesh_in_the_caller(o
 
     with warnings.catch_warnings():
         warnings.simplefilter("ignore")
-        from_pair = maille.build_collection(pairs, axes=AXES, cell_size=CELL_SIZE, levels=2)
-        from_mesh = maille.build_collection({3: source}, axes=AXES, cell_size=CELL_SIZE, levels=2)
+        from_pair = maille.build_collection(pairs, cell_size=CELL_SIZE, levels=2)
+        from_mesh = maille.build_collection({3: source}, cell_size=CELL_SIZE, levels=2)
 
     assert from_pair.cell_catalog.to_pylist() == from_mesh.cell_catalog.to_pylist()
 
@@ -267,7 +242,7 @@ def test_faces_that_do_not_belong_to_their_vertices_are_refused():
     """Caught at coercion, where the message can still name the object."""
     with pytest.raises(ValueError, match="Object 4"):
         maille.build_collection(
-            {4: (np.zeros((3, 3)), np.array([[0, 1, 9]]))}, axes=AXES, cell_size=CELL_SIZE
+            {4: (np.zeros((3, 3)), np.array([[0, 1, 9]]))}, cell_size=CELL_SIZE
         )
 
 
@@ -382,7 +357,7 @@ def test_the_component_order_is_the_callers_and_maille_never_interprets_it():
 
     The ``x``/``y``/``z`` in the ``bbox_*`` column names are labels for components 0, 1 and 2 --
     fixed by the Parquet schema a server checks -- not a claim about which physical axis each
-    one is. That claim is what the optional ``axes`` field carries.
+    one is. The format makes no such claim anywhere.
     """
     source = trimesh.creation.box(extents=[300.0, 170.0, 90.0]).apply_translation([260.0, 210.0, 95.0])
     vertices = np.asarray(source.vertices)
@@ -393,7 +368,7 @@ def test_the_component_order_is_the_callers_and_maille_never_interprets_it():
         forward = maille.build_collection({7: (vertices, faces)}, cell_size=(128, 128, 64), levels=3)
         # The same scene in the reverse order: components reversed, cell size reversed with them.
         reversed_ = maille.build_collection(
-            {7: (vertices[:, ::-1], faces)}, cell_size=(64, 128, 128), levels=3, axes=("z", "y", "x")
+            {7: (vertices[:, ::-1], faces)}, cell_size=(64, 128, 128), levels=3
         )
 
     assert [shard.num_rows for _, shard in forward.shards] == [shard.num_rows for _, shard in reversed_.shards], (
@@ -420,8 +395,8 @@ def test_the_component_order_changes_the_partition_and_never_the_geometry():
 
     That is worth pinning down, because it says the failure mode here is efficiency rather than
     correctness. The order question that *can* draw something sideways lives a layer up, in how
-    a renderer interprets the collection's relationship to its source -- which is what the
-    optional ``axes`` field is for, and why maille neither reads it nor invents it.
+    a renderer interprets the collection's relationship to its source -- which is why maille
+    states nothing about it rather than inventing a claim.
     """
     # Tall in the third component, narrow in the first: an order mistake cannot go unnoticed.
     source = trimesh.creation.box(extents=[40.0, 40.0, 400.0]).apply_translation([60.0, 60.0, 260.0])

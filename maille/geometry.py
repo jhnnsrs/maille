@@ -39,6 +39,7 @@ from collections.abc import Sequence
 from typing import Any
 
 import numpy as np
+import numpy.typing as npt
 import trimesh
 
 from maille.codecs import QUANT_MAX
@@ -49,7 +50,7 @@ from maille.sources import Mesh
 # --------------------------------------------------------------------------- #
 
 
-def _find(parent: np.ndarray, index: int) -> int:
+def _find(parent: npt.NDArray[np.int64], index: int) -> int:
     """Union-find root, with path compression."""
     root = index
     while parent[root] != root:
@@ -60,14 +61,14 @@ def _find(parent: np.ndarray, index: int) -> int:
 
 
 def decimate_fixed(
-    vertices: np.ndarray,
-    faces: np.ndarray,
+    vertices: npt.NDArray[np.float64],
+    faces: npt.NDArray[np.int64],
     *,
-    fixed: np.ndarray,
+    fixed: npt.NDArray[np.bool_],
     target_faces: int,
     check_interval: int | None = None,
     placement: str = "midpoint",
-) -> tuple[np.ndarray, np.ndarray, float]:
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], float]:
     """Collapse shortest edges until ``target_faces`` remain, never moving a fixed vertex.
 
     Greedy and not quadric-optimal: ``QUARTER`` is a face-count ratio and ``LOCKED`` is boundary
@@ -171,10 +172,10 @@ def decimate_fixed(
 
 
 def snap_boundary(
-    vertices: np.ndarray,
-    cell_size: np.ndarray,
-    coarse_extent: np.ndarray,
-) -> tuple[np.ndarray, np.ndarray]:
+    vertices: npt.NDArray[np.float64],
+    cell_size: npt.NDArray[np.int64],
+    coarse_extent: npt.NDArray[np.float64],
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.bool_]]:
     """Put every boundary vertex somewhere every level can represent exactly.
 
     The step that makes ``LOCKED`` true rather than merely declared, and the one that is easy
@@ -208,7 +209,7 @@ def snap_boundary(
     quantum = np.asarray(coarse_extent, dtype=np.float64) / QUANT_MAX
     scaled = vertices / cell_size
     on_plane = np.abs(vertices - np.rint(scaled) * cell_size) <= quantum
-    boundary: np.ndarray = np.asarray(on_plane.any(axis=1), dtype=bool)
+    boundary: npt.NDArray[np.bool_] = np.asarray(on_plane.any(axis=1), dtype=bool)
     if not boundary.any():
         return vertices, boundary
 
@@ -222,13 +223,15 @@ def snap_boundary(
     return vertices, boundary
 
 
-def on_planes(vertices: np.ndarray, extent: np.ndarray, tolerance: float = 1e-6) -> np.ndarray:
+def on_planes(
+    vertices: npt.NDArray[np.float64], extent: npt.NDArray[np.float64], tolerance: float = 1e-6
+) -> npt.NDArray[np.bool_]:
     """Which vertices lie on a cell face plane of a grid with this cell extent."""
     scaled = vertices / extent
     return np.asarray((np.abs(scaled - np.rint(scaled)) < tolerance).any(axis=1), dtype=bool)
 
 
-def border_vertices(faces: np.ndarray) -> np.ndarray:
+def border_vertices(faces: npt.NDArray[np.int64]) -> npt.NDArray[np.int64]:
     """The vertices on the mesh's open boundary -- those touching an edge with one triangle.
 
     **This is the curve that must not move**, and it is a sharper statement of it than
@@ -255,7 +258,7 @@ def border_vertices(faces: np.ndarray) -> np.ndarray:
 # --------------------------------------------------------------------------- #
 
 
-def clip_to_cells(mesh: Mesh, cell_size: np.ndarray) -> dict[tuple[int, int, int], Any]:
+def clip_to_cells(mesh: Mesh, cell_size: npt.NDArray[np.int64]) -> dict[tuple[int, int, int], Any]:
     """Cut a mesh at the level-0 cell planes, returning one fragment per occupied cell.
 
     Vertices produced by a cut lie exactly on the plane, which is what makes the boundary
@@ -298,8 +301,8 @@ def clip_to_cells(mesh: Mesh, cell_size: np.ndarray) -> dict[tuple[int, int, int
 
 
 def concatenate_and_weld(
-    pieces: Sequence[tuple[np.ndarray, np.ndarray]], tolerance: int = 9
-) -> tuple[np.ndarray, np.ndarray]:
+    pieces: Sequence[tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]], tolerance: int = 9
+) -> tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]:
     """Merge fragments into one mesh, fusing vertices that coincide exactly.
 
     The children's shared seams are bit-identical -- both sides were cut by the same plane
@@ -328,7 +331,9 @@ def concatenate_and_weld(
     return vertices[first[order]], faces[keep]
 
 
-def drop_degenerate(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
+def drop_degenerate(
+    vertices: npt.NDArray[np.float64], faces: npt.NDArray[np.int64]
+) -> npt.NDArray[np.int64]:
     """Drop faces that snapping fused into a line or a point.
 
     Snapping can bring two of a triangle's corners onto the same coordinate; a face that lost a

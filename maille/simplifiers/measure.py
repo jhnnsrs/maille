@@ -8,11 +8,12 @@ here rather than assumed.
 from __future__ import annotations
 
 import numpy as np
+import numpy.typing as npt
 
 from maille.geometry import border_vertices
 
 
-def measure_deviation(before: np.ndarray, after: np.ndarray) -> float:
+def measure_deviation(before: npt.NDArray[np.float64], after: npt.NDArray[np.float64]) -> float:
     """How far the simplified surface strays from the one it came from, as an upper bound.
 
     The furthest any original vertex sits from the *nearest surviving vertex*. Points on the
@@ -31,7 +32,9 @@ def measure_deviation(before: np.ndarray, after: np.ndarray) -> float:
     return float(cKDTree(np.asarray(after, dtype=np.float64)).query(np.asarray(before, dtype=np.float64))[0].max())
 
 
-def boundary_held(vertices: np.ndarray, faces: np.ndarray, kept: np.ndarray) -> bool:
+def boundary_held(
+    vertices: npt.NDArray[np.float64], faces: npt.NDArray[np.int64], kept: npt.NDArray[np.float64]
+) -> bool:
     """Whether every vertex on the open boundary survived at exactly its old position.
 
     Position rather than identity, because a backend that moves vertices hands back a fresh

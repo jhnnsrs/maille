@@ -11,6 +11,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 import numpy as np
+import numpy.typing as npt
 
 from maille.geometry import decimate_fixed
 from maille.simplifiers.protocol import Simplified
@@ -37,10 +38,10 @@ class GreedyEdgeCollapse:
 
     def simplify(
         self,
-        vertices: np.ndarray,
-        faces: np.ndarray,
+        vertices: npt.NDArray[np.float64],
+        faces: npt.NDArray[np.int64],
         *,
-        fixed: np.ndarray,
+        fixed: npt.NDArray[np.bool_],
         target_faces: int,
     ) -> Simplified:
         """Collapse edges shortest-first until the face budget is met."""

@@ -90,7 +90,7 @@ def test_object_ids_are_normalised_to_ints():
 def test_an_empty_collection_is_refused():
     """There is nothing to choose a cell size from and nothing to write."""
     with pytest.raises(maille.FormatError, match="at least one object"):
-        maille.build_collection({}, axes=("z", "y", "x"), cell_size=(64, 64, 64))
+        maille.build_collection({}, cell_size=(64, 64, 64))
 
 
 def test_choosing_a_cell_size_for_nothing_is_refused():
@@ -104,7 +104,6 @@ def test_an_unknown_codec_is_refused_before_the_expensive_work():
     with pytest.raises(maille.FormatError, match="the format defines"):
         maille.build_collection(
             {1: (np.zeros((3, 3)), np.array([[0, 1, 2]]))},
-            axes=("z", "y", "x"),
             cell_size=(64, 64, 64),
             codec="DRACO",
         )
@@ -115,7 +114,6 @@ def test_a_level_count_below_one_is_refused():
     with pytest.raises(maille.FormatError, match="at least one level"):
         maille.build_collection(
             {1: (np.zeros((3, 3)), np.array([[0, 1, 2]]))},
-            axes=("z", "y", "x"),
             cell_size=(64, 64, 64),
             levels=0,
         )

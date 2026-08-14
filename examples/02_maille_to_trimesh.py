@@ -90,7 +90,6 @@ def main() -> None:
     # makes a collection one store rather than a handful, and it is read from `maille.json`
     # alone, before a single Parquet file is opened.
     print(f"grid      : cell_size={collection.grid.cell_size} (x, y, z), levels={collection.grid.levels}")
-    print(f"axes      : {list(collection.axes) if collection.axes else '(none declared -- optional, and never read)'}")
     print(f"encoding  : codec={collection.encoding.codec}, positions={collection.encoding.positions}")
     print(f"counts    : {collection.manifest.counts}")
     print(f"objects   : {len(collection.objects)} in the identity index")

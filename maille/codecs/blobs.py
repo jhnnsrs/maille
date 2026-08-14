@@ -25,6 +25,7 @@ from __future__ import annotations
 from collections.abc import Sequence
 
 import numpy as np
+import numpy.typing as npt
 
 from maille.codecs.meshopt import MeshoptCodec
 from maille.codecs.protocol import BlobCodec
@@ -59,7 +60,7 @@ def codec_for(codec: str) -> BlobCodec:
 
 
 def encode_positions(
-    vertices: np.ndarray,
+    vertices: npt.ArrayLike,
     *,
     cell: int,
     level: int,
@@ -105,7 +106,7 @@ def decode_positions(
     codec: str = CODEC_NONE,
     compression: str = COMPRESSION_NONE,
     vertex_count: int | None = None,
-) -> np.ndarray:
+) -> npt.NDArray[np.float64]:
     """Unpack a ``positions`` blob back into an ``(n, 3)`` float array of voxel coordinates.
 
     The executable half of the format documentation, and what the round-trip check asserts
@@ -126,7 +127,7 @@ def decode_positions(
 
 
 def encode_indices(
-    faces: np.ndarray,
+    faces: npt.ArrayLike,
     *,
     codec: str = CODEC_NONE,
     compression: str = COMPRESSION_NONE,
@@ -149,7 +150,7 @@ def decode_indices(
     codec: str = CODEC_NONE,
     compression: str = COMPRESSION_NONE,
     index_count: int | None = None,
-) -> np.ndarray:
+) -> npt.NDArray[np.int64]:
     """Unpack an ``indices`` blob back into an ``(m, 3)`` triangle array.
 
     ``index_count`` is checked rather than needed, for the same reason as ``vertex_count`` on

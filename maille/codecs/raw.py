@@ -14,6 +14,7 @@ since the compressed frame carries no reliable length of its own.
 from __future__ import annotations
 
 import numpy as np
+import numpy.typing as npt
 
 from maille.codecs.compression import compress, decompress
 from maille.errors import FormatError
@@ -29,11 +30,13 @@ class RawCodec:
         """Name the manifest value this implements."""
         return f"RawCodec({self.name!r})"
 
-    def encode_positions(self, quantized: np.ndarray, *, compression: str) -> bytes:
+    def encode_positions(self, quantized: npt.NDArray[np.uint16], *, compression: str) -> bytes:
         """Interleave the ``uint16`` triples and hand back the bytes."""
         return compress(np.ascontiguousarray(quantized, dtype="<u2").reshape(-1).tobytes(), compression)
 
-    def decode_positions(self, blob: bytes, *, compression: str, vertex_count: int | None) -> np.ndarray:
+    def decode_positions(
+        self, blob: bytes, *, compression: str, vertex_count: int | None
+    ) -> npt.NDArray[np.uint16]:
         """Read the blob back as ``(n, 3)`` ``uint16``, checking the row's count against it."""
         blob = decompress(blob, compression, 6 * int(vertex_count or 0))
         quantized = np.frombuffer(blob, dtype="<u2").reshape(-1, 3)
@@ -45,7 +48,7 @@ class RawCodec:
             )
         return quantized
 
-    def encode_indices(self, faces: np.ndarray, *, compression: str, vertex_count: int | None) -> bytes:
+    def encode_indices(self, faces: npt.NDArray[np.uint32], *, compression: str, vertex_count: int | None) -> bytes:
         """Flatten the triangle list to little-endian ``uint32``.
 
         ``vertex_count`` is unused here and accepted only so the two codecs take the same
@@ -54,7 +57,9 @@ class RawCodec:
         del vertex_count
         return compress(np.ascontiguousarray(faces, dtype="<u4").reshape(-1).tobytes(), compression)
 
-    def decode_indices(self, blob: bytes, *, compression: str, index_count: int | None) -> np.ndarray:
+    def decode_indices(
+        self, blob: bytes, *, compression: str, index_count: int | None
+    ) -> npt.NDArray[np.int64]:
         """Read the blob back as ``(m, 3)`` triangles, checking the row's count against it."""
         blob = decompress(blob, compression, 4 * int(index_count or 0))
         triangles = np.frombuffer(blob, dtype="<u4").reshape(-1, 3).astype(np.int64)

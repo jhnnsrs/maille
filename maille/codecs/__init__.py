@@ -17,7 +17,8 @@ from there; nothing in the addressing needs to know how a blob is packed.
 Components are referred to as ``x``, ``y`` and ``z`` throughout, and in the ``bbox_*`` column
 names, purely as labels for slots 0, 1 and 2 -- the code never asks which physical axis a slot
 holds, and a collection whose components are ``(z, y, x)`` encodes and decodes identically. What
-a slot *means* is the optional ``axes`` declaration in the manifest, which nothing here reads.
+a slot *means* is not stated anywhere in the format: it is a claim about the collection's
+relation to something else, and it belongs to whatever owns that coordinate system.
 
 positions
 ---------

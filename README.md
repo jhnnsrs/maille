@@ -47,6 +47,11 @@ unguarded `from shapely import ops`) in its body, verified by blocking each in t
 What is genuinely optional is what a *consumer* would otherwise need code for: reaching a
 remote store, and decoding a compressed blob.
 
+maille ships a `py.typed` marker, so your type checker sees its annotations: vertices are
+`NDArray[np.float64]`, faces `NDArray[np.int64]`, and the three pluggable pieces — stores,
+codecs and simplifiers — are structural protocols you can satisfy without importing a base
+class. The package itself is checked with basedpyright in strict mode.
+
 ## Examples
 
 Three runnable scripts in [`examples/`](examples/), in order — trimesh to the format, the
@@ -299,13 +304,15 @@ transpose into first:
 
 ```python
 # vertices from a (z, y, x) volume, and the chunk shape of that same volume
-maille.write_meshes(objects, store, prefix=key, cell_size=(64, 128, 128), axes=["z", "y", "x"])
+maille.write_meshes(objects, store, prefix=key, cell_size=(64, 128, 128))
 ```
 
 The `x`/`y`/`z` in the `bbox_min_x` / `bbox_max_z` column names are **labels for slots 0, 1
 and 2**, fixed by the Parquet schema a server checks with a `DESCRIBE`. They are not a claim
-about which physical axis each slot holds. That claim is exactly what the optional `axes`
-field carries, and why it is the caller's to make.
+about which physical axis each slot holds, and the manifest makes no such claim either: naming
+these axes says how the collection relates to the image it came from or the coordinate graph it
+sits in, which is knowledge the layer that owns that coordinate system has and maille does not.
+A field here would be a claim nothing in the format could check, use or contradict.
 
 Two consequences worth knowing:
 

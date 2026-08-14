@@ -30,6 +30,7 @@ from dataclasses import dataclass
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import numpy.typing as npt
 
 from maille.codecs import QUANT_MAX, encode_indices, encode_positions
 from maille.errors import FormatError
@@ -53,11 +54,11 @@ from maille.manifest import (
     Grid,
     Manifest,
     level_part_path,
-    validate_axes,
 )
 from maille.octree import cell_box, morton_decode, morton_encode_one
 from maille.simplifiers import Simplifier, resolve_simplifier, simplify_to_target
 from maille.sources import MeshSource, coerce_objects
+from maille.stores import MailleStore
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
     import pyarrow as pa
@@ -89,7 +90,7 @@ class MeshCollection:
         """How this collection's blobs are packed."""
         return self.manifest.encoding
 
-    def write(self, store: Any, prefix: str = "") -> Manifest:  # noqa: ANN401
+    def write(self, store: MailleStore, prefix: str = "") -> Manifest:
         """Write this collection into a store. See :func:`maille.write_collection`."""
         from maille.writer import write_collection
 
@@ -139,7 +140,7 @@ def choose_cell_size(objects: Mapping[int, Any], *, levels: int = 3) -> tuple[in
     extent = np.maximum(upper, 1.0)
     chosen = np.minimum(chosen, np.exp2(np.ceil(np.log2(np.maximum(extent, 1.0)))))
 
-    def level0_cells(size: np.ndarray) -> float:
+    def level0_cells(size: npt.NDArray[np.float64]) -> float:
         return float(np.prod(np.maximum(np.ceil((upper - np.minimum(lower, 0.0)) / size), 1.0)))
 
     # Halve while the octree is doing too little work, but never below the object-fit size --
@@ -157,7 +158,6 @@ def choose_cell_size(objects: Mapping[int, Any], *, levels: int = 3) -> tuple[in
 def build_collection(
     objects: Mapping[int, MeshSource],
     *,
-    axes: Sequence[str] | None = None,
     cell_size: Sequence[int] | None = None,
     levels: int = 3,
     codec: str = CODEC_NONE,
@@ -172,12 +172,11 @@ def build_collection(
     Each value is a ``trimesh.Trimesh``, a :class:`maille.Mesh`, or a ``(vertices, faces)``
     pair. Vertices are in voxels, ordered ``(x, y, z)``.
 
-    ``axes`` is **optional metadata, carried and never read**. Nothing maille computes uses
-    it: vertex components, ``cell_size`` and the ``bbox_*`` columns are positional
-    ``(x, y, z)`` throughout. Naming those axes is a statement about how this collection
-    relates to whatever it came from, which belongs to the layer that owns the coordinate
-    system -- so pass it when that layer knows, and leave it out when it does not. See
-    :func:`maille.manifest.validate_axes`.
+    **Components are positional throughout, and never named.** Vertex components, ``cell_size``
+    and the ``bbox_*`` columns are slots 0, 1 and 2, and nothing here asks which physical axis a
+    slot holds -- meshes off a ``(z, y, x)`` volume stay ``(z, y, x)``. What those slots *mean*
+    is a statement about how this collection relates to whatever it came from, which belongs to
+    the layer that owns the coordinate system and is recorded there, not here.
 
     ``cell_size`` is the level-0 cell in voxels, ``(x, y, z)``. **Left unset it is chosen from
     the objects** by :func:`choose_cell_size` -- pass it when you know the source array's chunk
@@ -194,7 +193,6 @@ def build_collection(
     what was actually done rather than the format's default name.
     """
     schemas = arrow_schemas()  # fail on a missing pyarrow before the expensive clipping
-    declared_axes = validate_axes(axes) if axes is not None else None
     backend = resolve_simplifier(simplifier)
     schedule = decimation or Decimation.quarter()
 
@@ -235,10 +233,10 @@ def build_collection(
     # for why an odd 65535 makes that a separate step.
     coarse_extent = cell_size_array.astype(np.float64) * (2 ** (levels - 1))
     fragments_by_object: dict[
-        int, dict[tuple[int, int, int], tuple[np.ndarray, np.ndarray, np.ndarray]]
+        int, dict[tuple[int, int, int], tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], npt.NDArray[np.bool_]]]
     ] = {}
     for object_id in object_ids:
-        fragments: dict[tuple[int, int, int], tuple[np.ndarray, np.ndarray, np.ndarray]] = {}
+        fragments: dict[tuple[int, int, int], tuple[npt.NDArray[np.float64], npt.NDArray[np.int64], npt.NDArray[np.bool_]]] = {}
         for triple, fragment in clip_to_cells(meshes[object_id], cell_size_array).items():
             vertices, boundary = snap_boundary(
                 np.asarray(fragment.vertices, dtype=np.float64), cell_size_array, coarse_extent
@@ -268,7 +266,7 @@ def build_collection(
     #
     # A level's representation is standalone: the whole object is decimated to that level's
     # budget and then split by the fragments' cells, never expressed as a delta on a finer one.
-    per_level: dict[int, dict[int, dict[int, tuple[np.ndarray, np.ndarray]]]] = {}
+    per_level: dict[int, dict[int, dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]]]] = {}
     #: The simplifier's own estimate of how far it strayed, per ``(level, cell)`` -- the
     #: decimation half of that cell's ``lod_error``.
     displacement: dict[tuple[int, int], float] = {}
@@ -278,7 +276,7 @@ def build_collection(
     at_the_floor: dict[int, int] = {level: 0 for level in range(levels)}
 
     for level in range(levels):
-        level_cells: dict[int, dict[int, tuple[np.ndarray, np.ndarray]]] = {}
+        level_cells: dict[int, dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]]] = {}
         level_extent = cell_size_array * (2**level)
         for object_id in object_ids:
             fragments = fragments_by_object[object_id]
@@ -289,7 +287,7 @@ def build_collection(
             # level. The eight children tile their parent exactly, so a coarse cell is
             # assembled by merging -- never by cutting again, which is what would move a
             # boundary and break LOCKED.
-            groups: dict[tuple[int, int, int], list[tuple[np.ndarray, np.ndarray]]] = {}
+            groups: dict[tuple[int, int, int], list[tuple[npt.NDArray[np.float64], npt.NDArray[np.int64]]]] = {}
             for triple, (vertices, faces, _) in fragments.items():
                 coarse = tuple(int(component) // (2**level) for component in triple)
                 groups.setdefault(coarse, []).append((vertices, faces))
@@ -338,7 +336,8 @@ def build_collection(
     cell_errors: dict[tuple[int, int], float] = {}
     object_cells: dict[int, list[dict[str, int]]] = {object_id: [] for object_id in object_ids}
     object_totals: dict[int, tuple[int, int]] = {object_id: (0, 0) for object_id in object_ids}
-    object_bounds: dict[int, tuple[np.ndarray, np.ndarray]] = {}
+    #: The (low, high) corner of each object's bounds, in voxels.
+    object_bounds: dict[int, tuple[npt.NDArray[np.float64], npt.NDArray[np.float64]]] = {}
 
     for level in range(levels):
         rows: list[dict[str, Any]] = []
@@ -346,8 +345,8 @@ def build_collection(
             bucket = per_level[level][cell]
             ids = sorted(bucket)  # ascending object ids, as the format requires
 
-            all_vertices: list[np.ndarray] = []
-            all_faces: list[np.ndarray] = []
+            all_vertices: list[npt.NDArray[np.float64]] = []
+            all_faces: list[npt.NDArray[np.int64]] = []
             vertex_offsets: list[int] = []
             index_offsets: list[int] = []
             vertex_cursor = 0
@@ -464,7 +463,6 @@ def build_collection(
     manifest = Manifest(
         grid=grid,
         encoding=Encoding(codec=codec, compression=compression, decimation=schedule.declaration),
-        axes=declared_axes,
         counts={
             "objects": len(object_ids),
             "cellsPerLevel": [len(per_level[level]) for level in range(levels)],

@@ -39,10 +39,6 @@ COLLECTION = "segmentation"
 #: mesh cells over the same regions.
 CELL_SIZE = (128, 128, 64)
 
-#: An axis order a *caller* might declare. maille never reads it -- it is carried into the
-#: manifest for whatever owns the coordinate system. The last section shows the pass-through.
-AXES = ("z", "y", "x")
-
 LEVELS = 3
 
 
@@ -129,7 +125,6 @@ def main() -> None:
     print(f"wrote {OUTPUT / COLLECTION}")
     print(f"  spec version : {manifest.spec_version}")
     print(f"  grid         : cell_size={manifest.grid.cell_size} (x, y, z), levels={manifest.grid.levels}")
-    print(f"  axes         : {list(manifest.axes) if manifest.axes else '(none declared)'}")
     print(f"  encoding     : {manifest.encoding.to_dict()}")
     print(f"  counts       : {manifest.counts}")
 
@@ -148,7 +143,7 @@ def main() -> None:
     # 2. The two-step form: build, inspect, then write.
     # ---------------------------------------------------------------- #
     rule("The same thing in two steps, when you want to look first")
-    collection = maille.build_collection(objects, axes=AXES, cell_size=CELL_SIZE, levels=LEVELS)
+    collection = maille.build_collection(objects, cell_size=CELL_SIZE, levels=LEVELS)
 
     print(f"cell catalog   : {collection.cell_catalog.num_rows} rows -- the spatial index")
     print(f"                 columns: {', '.join(collection.cell_catalog.column_names[:6])}, ...")
@@ -180,22 +175,28 @@ def main() -> None:
     print(f"written a second copy to {OUTPUT / 'segmentation-again'}")
 
     # ---------------------------------------------------------------- #
-    # The one optional declaration, and who it is for.
+    # The one thing the format deliberately does not state.
     # ---------------------------------------------------------------- #
-    rule("Declaring an axis order, if you are the layer that knows one")
-    named = maille.build_collection(objects, axes=AXES, cell_size=CELL_SIZE, levels=1)
-    anonymous = maille.build_collection(objects, cell_size=CELL_SIZE, levels=1)
+    rule("What a component means, and why the manifest does not say")
+    same_scene_reversed = {
+        instance_id: (mesh.vertices[:, ::-1], mesh.faces) for instance_id, mesh in objects.items()
+    }
+    reversed_collection = maille.build_collection(
+        same_scene_reversed, cell_size=CELL_SIZE[::-1], levels=1
+    )
+    forward = maille.build_collection(objects, cell_size=CELL_SIZE, levels=1)
 
-    print(f"with    axes={list(AXES)} -> manifest axes: {named.manifest.axes}")
-    print(f"without axes             -> manifest axes: {anonymous.manifest.axes}")
-    print(f"same geometry either way : {named.shards[0][1].to_pylist() == anonymous.shards[0][1].to_pylist()}")
+    print(f"manifest keys       : {sorted(manifest.to_dict())}")
+    print(f"the scene as given  : cell_size={CELL_SIZE}, {forward.shards[0][1].num_rows} cells at level 0")
+    print(f"components reversed : cell_size={CELL_SIZE[::-1]}, {reversed_collection.shards[0][1].num_rows} cells")
     print(
-        "\nmaille never reads `axes` -- not when quantizing, not when addressing a cell, not\n"
-        "when planning. Everything it computes is positional (x, y, z). Naming those axes is a\n"
-        "statement about how this collection relates to something else (the image it came from,\n"
-        "the coordinate graph it is placed in), which belongs to whatever owns that coordinate\n"
-        "system. So it is carried through when you pass it, and simply absent when you do not --\n"
-        "which says 'no claim made' rather than something possibly false."
+        "\nmaille addresses components by position and never by name -- not when quantizing, not\n"
+        "when addressing a cell, not when planning. Feed it (z, y, x) data with a (z, y, x)\n"
+        "cell_size and you get the same octree, cell for cell, as the (x, y, z) scene above.\n"
+        "\nSo the manifest names no axes. Which physical axis a slot holds is a claim about how\n"
+        "this collection relates to something else -- the image it came from, the coordinate\n"
+        "graph it is placed in -- and that belongs to whatever owns that coordinate system. A\n"
+        "field here would be a claim nothing in the format could check, use or contradict."
     )
 
     # ---------------------------------------------------------------- #

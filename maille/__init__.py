@@ -44,8 +44,9 @@ octree comes out the same either way.
 
 The ``x``/``y``/``z`` in the ``bbox_min_x`` column names are labels for those three slots,
 fixed by the Parquet schema a server checks. They are not a claim about which physical axis
-each slot holds; the optional ``axes`` field is what carries that claim, for whatever layer
-owns the coordinate system.
+each slot holds, and the format makes no such claim anywhere: naming these axes is a statement
+about how the collection relates to the image it came from or the coordinate graph it sits in,
+which belongs to whatever owns that coordinate system rather than to `maille.json`.
 
 An order mistake here cannot misplace geometry: clipping and quantization read the same
 ``cell_size``, so a mismatched one yields a differently *shaped* octree rather than displaced
@@ -141,7 +142,7 @@ from maille.simplifiers import (
     Simplifier,
     simplifier_for,
 )
-from maille.sources import Mesh, MeshSource, coerce_mesh
+from maille.sources import HasVerticesAndFaces, Mesh, MeshSource, coerce_mesh
 from maille.stores import (
     AsyncReadable,
     DirectoryStore,
@@ -189,6 +190,7 @@ __all__ = [
     "FormatError",
     "GreedyEdgeCollapse",
     "Grid",
+    "HasVerticesAndFaces",
     "MailleError",
     "MailleStore",
     "Manifest",

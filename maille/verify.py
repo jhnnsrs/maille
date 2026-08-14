@@ -33,6 +33,7 @@ from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
 import numpy as np
+import numpy.typing as npt
 
 from maille.codecs import QUANT_MAX
 from maille.geometry import on_planes
@@ -247,13 +248,11 @@ def _child_masks_name_what_exists(collection: Collection) -> Check:
         # cleared bit is the worse direction: it hides a child and everything under it, where
         # a spurious one merely wastes a fetch.
         i, j, k = entry.triple
-        real = {
-            (level - 1, child)
+        octants = (
+            morton_encode_one((2 * i + (octant & 1), 2 * j + ((octant >> 1) & 1), 2 * k + ((octant >> 2) & 1)))
             for octant in range(8)
-            if (child := morton_encode_one((2 * i + (octant & 1), 2 * j + ((octant >> 1) & 1), 2 * k + ((octant >> 2) & 1))))
-            is not None
-            and (level - 1, child) in collection.cells
-        }
+        )
+        real = {(level - 1, child) for child in octants if (level - 1, child) in collection.cells}
         claimed = set(entry.children())
         if claimed != real:
             wrong.append(
@@ -643,7 +642,7 @@ def _lod_error_is_a_real_bound(collection: Collection) -> Check:
 # --------------------------------------------------------------------------- #
 
 
-def _tree(points: np.ndarray) -> Any | None:  # noqa: ANN401
+def _tree(points: npt.NDArray[np.float64]) -> Any | None:  # noqa: ANN401
     """A KD-tree over these points, or ``None`` when scipy is not installed.
 
     scipy arrives with trimesh, so it is normally there. The brute-force fallback exists so
@@ -663,7 +662,9 @@ def _tree(points: np.ndarray) -> Any | None:  # noqa: ANN401
 _CANDIDATE_FACES = 32
 
 
-def _max_surface_distance(query: np.ndarray, vertices: np.ndarray, faces: np.ndarray) -> float:
+def _max_surface_distance(
+    query: npt.NDArray[np.float64], vertices: npt.NDArray[np.float64], faces: npt.NDArray[np.int64]
+) -> float:
     """The furthest any query point sits from the surface those triangles describe.
 
     Point-to-triangle rather than point-to-vertex, for the reason spelled out in
@@ -677,7 +678,7 @@ def _max_surface_distance(query: np.ndarray, vertices: np.ndarray, faces: np.nda
         return 0.0
 
     corners = (vertices[faces[:, 0]], vertices[faces[:, 1]], vertices[faces[:, 2]])
-    centroids: np.ndarray = (corners[0] + corners[1] + corners[2]) / 3.0
+    centroids: npt.NDArray[np.float64] = (corners[0] + corners[1] + corners[2]) / 3.0
     tree = _tree(centroids)
     if tree is None:
         return float(max(_point_to_faces(point, corners, None) for point in query))
@@ -687,7 +688,11 @@ def _max_surface_distance(query: np.ndarray, vertices: np.ndarray, faces: np.nda
     return float(max(_point_to_faces(point, corners, row) for point, row in zip(query, candidates)))
 
 
-def _point_to_faces(point: np.ndarray, corners: tuple[np.ndarray, ...], which: np.ndarray | None) -> float:
+def _point_to_faces(
+    point: npt.NDArray[np.float64],
+    corners: tuple[npt.NDArray[np.float64], ...],
+    which: npt.NDArray[np.int64] | None,
+) -> float:
     """The distance from one point to the nearest of some triangles.
 
     The closest point of a triangle is found by clamping the barycentric coordinates of the
@@ -715,7 +720,9 @@ def _point_to_faces(point: np.ndarray, corners: tuple[np.ndarray, ...], which: n
     return float(np.linalg.norm(closest - point, axis=-1).min())
 
 
-def _count_unmatched(query: np.ndarray, reference: np.ndarray, *, tolerance: float) -> int:
+def _count_unmatched(
+    query: npt.NDArray[np.float64], reference: npt.NDArray[np.float64], *, tolerance: float
+) -> int:
     """How many query points have no reference point within ``tolerance``."""
     if not len(query):
         return 0
