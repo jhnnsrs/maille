@@ -33,16 +33,15 @@ structure a dumb object store can serve and a renderer can plan against.
 ## Install
 
 ```bash
-pip install maille                 # the format itself: numpy + pyarrow
-pip install 'maille[mesh]'         # + everything needed to write a collection
-pip install 'maille[complete]'     # + obstore, for S3 and friends
+pip install maille              # everything needed to build and read collections
+pip install 'maille[obstore]'   # + obstore, to write to S3 and friends
 ```
 
-The core imports two dependencies: reading a mesh in, compressing a blob and talking to S3 are
-optional extras, imported lazily and refused with a message naming the extra. `[mesh]` is the
-one most writers want — it carries trimesh (which cuts a mesh at the cell planes) *and*
-meshoptimizer, because `codec` defaults to `MESHOPT` and an install that could not honour the
-default would be a trap.
+Everything that takes part in building a collection is a dependency rather than an extra:
+trimesh cuts a mesh at the cell planes (pulling in scipy and shapely, which
+`slice_mesh_plane` imports outright), `fast-simplification` makes the coarse levels, and
+`meshoptimizer` is the blob codec the format defaults to. Only reaching a remote store is
+optional — maille asks a store for three methods and does not care who implements them.
 
 ## Examples
 
@@ -201,14 +200,18 @@ maille.build_collection(objects, cell_size=..., decimation=maille.Decimation.hal
 
 | Backend | What it is |
 | --- | --- |
-| `MeshoptSimplifier` | **The default** where `meshoptimizer` is installed. Quadric-error simplification that **never invents a vertex position** — it returns indices into the original vertex array, so every surviving vertex is bit-identical and `LOCKED` is provable rather than intended. Reports a real geometric deviation. |
-| `GreedyEdgeCollapse` | Shortest-edge collapse in pure numpy, so the `numpy + pyarrow` core can still build a multi-level tree. Lower quality, and its only honest error estimate is how far it moved a vertex — which on a collapsing object is about that object's radius. |
+| `QuadricSimplifier` | **The default**, backed by [fast-simplification][fs]. Quadric edge collapse run with `preserve_border=True`, which pins every vertex on the cut curve at *exactly* its input position while letting interior vertices move to the shape-optimal spot. That split is what the format wants: the cut curve is the only thing a neighbour shares, so it is the only thing that must not move. |
+| `GreedyEdgeCollapse` | Shortest-edge collapse in pure numpy. Lower quality and a much looser error estimate, but it pins only *this* level's cell planes, so it reduces harder on heavily cut objects. |
 
-The two differ in a way worth knowing before you pick: meshopt preserves topology, so it
-produces **better shapes at a lower reported error but often keeps more faces**, and where the
-boundary is heavily pinned it may miss the face budget that the greedy collapse would hit by
-destroying the surface. maille warns when a level misses its budget and names which cause the
-numbers support.
+The trade is real and worth knowing before you pick. `preserve_border` is all-or-nothing: after
+a coarse cell welds its children, the topological boundary still contains the level-0 seams
+*interior* to that cell, and those get pinned too even though nothing across a face depends on
+them. On a heavily cut object that can be most of the boundary, and the collapse then falls
+short of its budget — measured on one box cut into 34 fragments, the quadric backend stopped at
+74% where the greedy collapse reached 9%. maille warns when a level misses its budget and names
+which cause the numbers support.
+
+[fs]: https://github.com/pyvista/fast-simplification
 
 `Decimation` controls how much survives each level — `quarter()` (the default), `half()`,
 `eighth()`, or `custom(ratio)` — plus `floor_faces`, the smallest budget any one object's piece
@@ -223,6 +226,32 @@ class MySimplifier:
     name = "mine"
     def simplify(self, vertices, faces, *, fixed, target_faces) -> maille.Simplified: ...
 ```
+
+## Checking one
+
+Two of the declarations above are kept by the writer or not at all, and no renderer can see
+whether they were — it only ever looks at one cell. Given the whole collection they are
+perfectly checkable, so maille ships the thing that checks:
+
+```python
+report = maille.verify(collection, tier="geometry")
+if not report:
+    print(report)          # every failed check, with examples
+```
+
+Three tiers, because they cost very different amounts:
+
+| tier | reads | answers |
+| --- | --- | --- |
+| `structure` | the manifest and two catalogs | do the files exist, are the recorded lengths right, does `child_mask` name the children that exist, do the locators point inside real row groups, do the two catalogs agree |
+| `blobs` | every cell | does every blob decode to the counts its row claims, do indices stay inside their vertex array, is every vertex inside its own cell box |
+| `geometry` | every level, compared | `boundary: LOCKED` — are on-plane vertices held fixed across levels; `decimation` — is a coarse level actually smaller; is `lod_error` a real bound on deviation from the level-0 surface |
+
+`structure` reads two small files and no geometry, which makes it cheap enough to run at
+registration time — the point in a pipeline where rejecting a bad collection is free.
+
+Nothing raises. A verifier that stops at the first problem tells you about one thing when you
+wanted all of them, so every check runs and the report carries the lot.
 
 ## Coordinates
 

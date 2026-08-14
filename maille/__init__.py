@@ -142,6 +142,7 @@ from maille.store import (
     RangeReadable,
     StoreFile,
 )
+from maille.verify import Check, VerifyReport, verify
 from maille.writer import awrite_collection, write_collection, write_meshes
 
 __all__ = [
@@ -165,6 +166,7 @@ __all__ = [
     "AsyncReadable",
     "Camera",
     "CellEntry",
+    "Check",
     "Collection",
     "Decimation",
     "DecodedCell",
@@ -190,6 +192,7 @@ __all__ = [
     "Simplifier",
     "StoreFile",
     "UnfinishedCollectionError",
+    "VerifyReport",
     "aopen_collection",
     "arrow_schemas",
     "auto_simplifier",
@@ -212,6 +215,7 @@ __all__ = [
     "plan_cells",
     "snap_boundary",
     "validate_columns",
+    "verify",
     "write_collection",
     "write_meshes",
 ]
