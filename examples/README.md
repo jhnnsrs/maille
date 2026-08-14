@@ -17,7 +17,7 @@ whenever you like — examples 2 and 3 rebuild the collection if it is not there
 | --- | --- |
 | [`01_trimesh_to_maille.py`](01_trimesh_to_maille.py) | `{id: trimesh.Trimesh}` → a collection on disk. Both the one-call `write_meshes` form and the two-step build-then-inspect-then-write form, plus what the tree looks like and what each level costs. |
 | [`02_maille_to_trimesh.py`](02_maille_to_trimesh.py) | A collection → `trimesh.Trimesh` objects. One object reassembled across its cells, one object sliced out of a shared cell, and a whole level exported as OBJ. Measures the round-trip error. |
-| [`03_level_of_detail.py`](03_level_of_detail.py) | The point of the format: spending an error budget in voxels or in pixels, what each plan actually costs to fetch, mixed-level plans from a camera inside the scene, and fetching one object alone. |
+| [`03_level_of_detail.py`](03_level_of_detail.py) | The point of the format: spending an error budget in voxels or in pixels, what each plan actually costs to fetch, mixed-level plans from a camera inside the scene, fetching one object alone, and what the two simplification backends cost against each other. |
 
 [`common.py`](common.py) holds the demo scene the three share — a segmentation-shaped set of
 32 objects spread along `x`, keyed by sparse instance ids the way a label image would key them.
@@ -39,10 +39,10 @@ Example 3, the LOD trade — a camera pulling back, accepting 8 pixels of error:
 
 ```
  distance   cells     faces      bytes   of full  levels
-      143      87     31520    235,451     100%  L0x87
-     1428      86     31500    235,146     100%  L0x84, L1x2
-     5713      75     26898    202,920      86%  L0x63, L1x12
-    14284       6      1836     10,565       4%  L2x6
+      143      71     24170    175,554      75%  L0x60, L1x11
+     1428      57     18900    141,414      60%  L0x39, L1x18
+     2857      31     10408     70,929      30%  L0x13, L1x16, L2x2
+     5713       6      2078     11,681       5%  L2x6
 ```
 
 Every one of those decisions comes out of `catalog/cells.parquet` alone — one small file, one

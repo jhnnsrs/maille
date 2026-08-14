@@ -248,9 +248,16 @@ class Decimation:
     left to take, and taking it anyway removes the object from the level.
 
     ``declaration`` is what lands in ``encoding.decimation``, and it is **checked against the
-    ratio rather than trusted**: a writer that declared ``QUARTER`` while reducing by half would
-    be making a claim about the geometry that nothing downstream could test, so the two are
-    required to agree. Use the constructors and this never comes up.
+    ratio rather than trusted**: a writer that declared ``QUARTER`` while asking for half would
+    be making a claim nothing downstream could test, so the two are required to agree. Use the
+    constructors and this never comes up.
+
+    **It names the target, not the outcome.** A surface can refuse a budget -- a simplifier that
+    preserves topology will stop short rather than destroy it -- so a collection declaring
+    ``QUARTER`` is one that *asked* each level for a quarter, not one that always got it. That
+    is the reading the format's own wording takes ("level ``L`` targets ``(1/4)**L``"), and it
+    is why what actually happened is reported by a warning at build time and readable per cell
+    in the catalog, rather than being folded into a single word here.
     """
 
     ratio: float = 0.25

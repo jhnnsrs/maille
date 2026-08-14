@@ -545,7 +545,7 @@ def _warn_if_decimation_missed(
             f"altogether -- and an object that vanishes when a viewer zooms out is a worse artifact than a "
             f"coarse level that saves little. This is expected for a collection of small objects."
         )
-    else:
+    elif getattr(backend, "uses_fixed_mask", True):
         cause = (
             f"{locked}/{pinnable} level-0 vertices ({locked / max(pinnable, 1):.0%}) lie on a cell face and are "
             f"pinned by `boundary: LOCKED`, so the {getattr(backend, 'name', 'simplifier')} backend cannot spend "
@@ -553,6 +553,18 @@ def _warn_if_decimation_missed(
             f"{tuple(int(component) for component in cell_size)} is small relative to the objects -- pass a "
             f"larger `cell_size`, leave it unset so `choose_cell_size` picks one, or reduce `levels`, since a "
             f"coarse level that saves nothing still costs a file and a fetch."
+        )
+    else:
+        # This backend is held by the topological boundary rather than by the `fixed` mask, so
+        # the share of vertices in that mask would explain the miss with a figure that does not
+        # describe the constraint. Name the cause without a number that is not about it.
+        cause = (
+            f"The {getattr(backend, 'name', 'simplifier')} backend locks the cut boundary and preserves topology, "
+            f"so it stops short of a budget rather than destroying a surface to reach one. The cell size "
+            f"{tuple(int(component) for component in cell_size)} being small relative to the objects leaves most of "
+            f"each fragment on a boundary -- pass a larger `cell_size`, leave it unset so `choose_cell_size` picks "
+            f"one, reduce `levels`, or pass `simplifier=GreedyEdgeCollapse()`, which will collapse onto a locked "
+            f"vertex and reach the budget at the cost of a much looser error bound."
         )
 
     warnings.warn(

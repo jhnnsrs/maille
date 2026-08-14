@@ -73,16 +73,16 @@ def main() -> None:
               f"{min(errors):>9.4f} .. {max(errors):<8.4f}")
 
     print(
-        "\n`lod_error` is the writer's upper bound on how far a vertex at this level may sit\n"
-        "from where it sits at level 0: the quantization step, plus the furthest any vertex\n"
-        "moved during decimation. Every budget below is spent against it.\n"
-        "\n"
-        "It is deliberately conservative, and the coarse numbers are not a mistake -- when a\n"
-        "small object collapses to a handful of triangles, its vertices really did move by\n"
-        "something like its own radius. It is an upper bound rather than a measured Hausdorff\n"
-        "distance, so it over-fetches rather than under-draws, which is the safe direction.\n"
-        "Note also that a parent's error always dominates its children's: without that, a\n"
-        "tighter budget could buy you a coarser cell."
+        f"\n`lod_error` is an upper bound on how far this level's surface strays from level 0:\n"
+        f"the quantization step, plus whatever the simplifier reports for that cell. This\n"
+        f"collection was built with the {collection.encoding.decimation} schedule.\n"
+        f"\n"
+        f"Where the numbers stay large it is not a mistake: a cell holding a small object that\n"
+        f"had to collapse to a handful of triangles really does deviate by something like that\n"
+        f"object's size. It is a bound rather than a measured Hausdorff distance, so it\n"
+        f"over-fetches rather than under-draws, which is the safe direction. And a parent's\n"
+        f"error always dominates its children's -- without that, a tighter budget could buy you\n"
+        f"a coarser cell."
     )
 
     # ---------------------------------------------------------------- #
@@ -197,5 +197,47 @@ def main() -> None:
     )
 
 
+def compare_backends() -> None:
+    """What the choice of simplifier costs and buys, on the same objects.
+
+    The trade is not one-sided. meshopt preserves topology, so it produces better shapes at a
+    lower measured error -- but where the boundary is heavily pinned it will refuse to reach a
+    face budget the greedy collapse hits by destroying the surface.
+    """
+    import warnings
+
+    from common import CELL_SIZE, LEVELS, demo_objects
+
+    rule("6. The two simplifiers, on the same objects")
+    objects = demo_objects()
+
+    print(f"{'backend':>22}  {'faces per level':>28}  {'worst lod_error':>16}")
+    for simplifier in (maille.MeshoptSimplifier(), maille.GreedyEdgeCollapse()):
+        with warnings.catch_warnings():
+            warnings.simplefilter("ignore")
+            built = maille.build_collection(
+                objects, cell_size=CELL_SIZE, levels=LEVELS, simplifier=simplifier
+            )
+        faces = [sum(shard.column("index_count").to_pylist()) // 3 for _, shard in built.shards]
+        worst = max(built.cell_catalog.column("lod_error").to_pylist())
+        print(f"{simplifier.name:>22}  {faces!s:>28}  {worst:>16.3f}")
+
+    print(
+        "\nRead that error column carefully: the two are NOT at equal face counts, so part of\n"
+        "the gap is simply more geometry. Held to the same target on the same mesh, meshopt\n"
+        "still reports the lower deviation by a wide margin -- that comparison is a unit test\n"
+        "(`test_meshopt_reports_a_far_tighter_error_than_the_fallback`) rather than a table\n"
+        "here, because controlling for it needs one call rather than a whole build.\n"
+        "\nmeshopt is the default wherever it is installed. Pick the greedy collapse when a\n"
+        "heavily pinned boundary stops meshopt reaching the budget -- it will collapse an edge\n"
+        "onto a locked vertex, where meshopt leaves the locked region alone -- and accept that\n"
+        "its error column is a much looser bound.\n"
+        "\n"
+        "    maille.build_collection(objects, ..., simplifier=maille.GreedyEdgeCollapse())\n"
+        "    maille.build_collection(objects, ..., decimation=maille.Decimation.half())"
+    )
+
+
 if __name__ == "__main__":
     main()
+    compare_backends()

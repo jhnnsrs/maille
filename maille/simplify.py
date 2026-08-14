@@ -17,10 +17,12 @@ Two backends ship:
     tighter ``lod_error`` than the alternative below can offer.
 
 :class:`GreedyEdgeCollapse`
-    Shortest-edge collapse in pure numpy, so the ``numpy + pyarrow`` core can still build a
-    multi-level tree with no extras installed. Lower quality, and its only honest error estimate
-    is how far it moved a vertex -- which, when a small object collapses toward a point, is
-    about that object's own radius. Budgets against it are therefore coarse.
+    Shortest-edge collapse in pure numpy, for an install that has trimesh but not
+    meshoptimizer. (Building a collection needs trimesh either way -- it is what cuts a mesh at
+    the cell planes -- so this is the *simplifier* falling back, never the whole writer.) Lower
+    quality, and its only honest error estimate is how far it moved a vertex, which when a small
+    object collapses toward a point is about that object's own radius. Budgets against it are
+    therefore coarse.
 
 Two meshopt features are deliberately *not* exposed. ``simplify_sloppy`` takes no options at
 all, so it cannot lock a border and cannot honour ``LOCKED`` -- and this spec version refuses
@@ -75,7 +77,22 @@ class Simplifier(Protocol):
     trivially and need only ensure the boundary vertices survive.
     """
 
-    name: str
+    @property
+    def name(self) -> str:
+        """What to call this backend in a manifest, a warning or a diagnostic."""
+        ...
+
+    @property
+    def uses_fixed_mask(self) -> bool:
+        """Whether ``fixed`` is what constrains this backend, or something narrower.
+
+        The builder reports *why* a face budget was missed, and a pinned boundary is the usual
+        reason -- but only a backend that actually reads ``fixed`` is constrained by the number
+        of vertices in it. One that locks the topological border instead is held by a strict
+        subset, so quoting the ``fixed`` count at it would explain the miss with a figure that
+        does not describe the constraint.
+        """
+        ...
 
     def simplify(
         self,
@@ -93,6 +110,10 @@ class Simplifier(Protocol):
 class GreedyEdgeCollapse:
     """Shortest-edge collapse in pure numpy. The fallback when meshoptimizer is absent.
 
+    Chosen automatically by :func:`auto_simplifier` in that case, and worth choosing explicitly
+    when a heavily pinned boundary keeps meshopt from reaching the face budget: this one will
+    collapse an edge *onto* a locked vertex, where meshopt leaves the locked region alone.
+
     ``check_interval`` is how many collapses to make between face counts (``None`` picks 16
     above 256 faces and 1 below, where overshoot would consume the mesh). ``placement`` is
     ``"midpoint"`` or ``"onto_fixed"``; the latter never moves a vertex, which trades shape
@@ -102,6 +123,8 @@ class GreedyEdgeCollapse:
     check_interval: int | None = None
     placement: str = "midpoint"
     name: str = "greedy-edge-collapse"
+    #: This one is held by exactly the mask it is handed.
+    uses_fixed_mask: bool = True
 
     def simplify(
         self,
@@ -147,6 +170,9 @@ class MeshoptSimplifier:
     target_error: float = _NO_ERROR_CEILING
     fallback: Simplifier = field(default_factory=GreedyEdgeCollapse)
     name: str = "meshopt"
+    #: meshopt locks the *topological border*, not the mask it is handed -- a strict subset of
+    #: it, and the more precise statement of what may not move. See `border_vertices`.
+    uses_fixed_mask: bool = False
 
     def simplify(
         self,
