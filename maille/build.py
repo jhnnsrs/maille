@@ -3,10 +3,23 @@
 What this builder does not do
 -----------------------------
 It holds every object in memory and builds one shard per level, so it is sized for thousands
-of objects rather than millions. It does not reorder rows into Morton order within a level
-(the sort key describes the cell addressing, and a reader seeks by the catalog). It computes
-``lod_error`` as an upper bound -- the quantization step plus the largest distance any vertex
-moved during decimation -- rather than a measured Hausdorff distance.
+of objects rather than millions. It computes ``lod_error`` as an upper bound -- the
+quantization step plus the largest distance any vertex moved during decimation -- rather than
+a measured Hausdorff distance.
+
+What it does do, and what depends on it
+---------------------------------------
+Rows within a level are emitted in ascending Morton order, which is what ``grid.sortKey``
+declares. That is not a cosmetic ordering: the writer groups consecutive rows into row groups,
+so Morton order is what makes a row group a *spatially compact* set of cells rather than an
+arbitrary one, and therefore what makes fetching one row group a sensible unit of work for a
+reader. Reordering these rows would not corrupt anything -- it would quietly make every range
+read fetch scattered geometry.
+
+The one thing left unfilled here is the cell catalog's ``part`` / ``row_group`` / ``blob_bytes``
+locator. Those describe the serialized bytes, which do not exist yet at build time; a
+:class:`MeshCollection` you inspect without writing carries nulls there, and
+:func:`maille.write_collection` fills them in as it lands each part.
 """
 
 from __future__ import annotations
@@ -32,7 +45,6 @@ from maille.frames import arrow_schemas, build_table
 from maille.geometry import (
     clip_to_cells,
     concatenate_and_weld,
-    decimate_fixed,
     drop_degenerate,
     on_planes,
     snap_boundary,
@@ -42,12 +54,14 @@ from maille.manifest import (
     CODEC_MESHOPT,
     CODEC_NONE,
     OBJECT_CATALOG_PATH,
+    Decimation,
     Encoding,
     Grid,
     Manifest,
     level_part_path,
     validate_axes,
 )
+from maille.simplify import Simplifier, resolve_simplifier, simplify_to_target
 from maille.sources import MeshSource, coerce_objects
 
 if TYPE_CHECKING:  # pragma: no cover - typing only
@@ -152,6 +166,8 @@ def build_collection(
     cell_size: Sequence[int] | None = None,
     levels: int = 3,
     codec: str = CODEC_MESHOPT,
+    simplifier: Simplifier | None = None,
+    decimation: Decimation | None = None,
 ) -> MeshCollection:
     """Turn ``{object_id: mesh}`` into a collection's three frames and its manifest.
 
@@ -172,9 +188,17 @@ def build_collection(
     shape, which is the value worth matching and the one no amount of looking at meshes can
     reveal. ``levels`` is how deep the octree goes; every level from 0 to ``levels - 1`` gets a
     file, because a gap is geometry a planner never asks for.
+
+    ``simplifier`` is how a coarse level is made; left unset it is
+    :func:`maille.auto_simplifier`, which picks meshoptimizer where it is installed and a pure
+    numpy edge collapse where it is not. ``decimation`` is how much survives each level,
+    defaulting to :meth:`maille.Decimation.quarter` -- and whatever it is, the manifest declares
+    what was actually done rather than the format's default name.
     """
     schemas = arrow_schemas()  # fail on a missing pyarrow before the expensive clipping
     declared_axes = validate_axes(axes) if axes is not None else None
+    backend = resolve_simplifier(simplifier)
+    schedule = decimation or Decimation.quarter()
 
     if codec not in (CODEC_MESHOPT, CODEC_NONE):
         raise FormatError(
@@ -248,11 +272,11 @@ def build_collection(
     # A level's representation is standalone: the whole object is decimated to that level's
     # budget and then split by the fragments' cells, never expressed as a delta on a finer one.
     per_level: dict[int, dict[int, dict[int, tuple[np.ndarray, np.ndarray]]]] = {}
-    #: How far the decimator moved a vertex, per ``(level, cell)`` -- the decimation half of
-    #: that cell's ``lod_error``.
+    #: The simplifier's own estimate of how far it strayed, per ``(level, cell)`` -- the
+    #: decimation half of that cell's ``lod_error``.
     displacement: dict[tuple[int, int], float] = {}
-    #: Per level, how many object-in-cell pieces `QUARTER` could take nothing more from --
-    #: either because they were already at the four-face floor, or because the target had to be
+    #: Per level, how many object-in-cell pieces the schedule could take nothing more from --
+    #: either because they were already at the face floor, or because the target had to be
     #: relaxed to keep the piece from being decimated out of existence.
     at_the_floor: dict[int, int] = {level: 0 for level in range(levels)}
 
@@ -284,24 +308,25 @@ def build_collection(
                     # which is what keeps `QUARTER` reachable instead of stalling against a
                     # boundary inherited from the finest level.
                     own_faces = on_planes(vertices, level_extent)
-                    wanted_faces = round(len(faces) * (0.25**level))
-                    target = max(4, wanted_faces)
-                    # `QUARTER` has nothing left to take when the ratio it asks for is finer
-                    # than the four-face floor, or when the piece is already under the target.
-                    # Both are a different explanation for a missed budget than a boundary the
-                    # decimator may not spend, and the warning must not confuse them.
-                    at_floor = wanted_faces <= 4 or len(faces) <= target
-                    vertices, faces, moved, relaxed = (
-                        _decimate_to_the_tightest_target_that_survives(
-                            vertices, faces, fixed=own_faces, target_faces=target
-                        )
+                    wanted_faces = round(len(faces) * (schedule.ratio**level))
+                    target = schedule.target_faces(len(faces), level)
+                    # The schedule has nothing left to take when the ratio it asks for is finer
+                    # than the face floor, or when the piece is already under the target. Both
+                    # are a different explanation for a missed budget than a boundary the
+                    # simplifier may not spend, and the warning must not confuse them.
+                    at_floor = wanted_faces <= schedule.floor_faces or len(faces) <= target
+                    result, relaxed = simplify_to_target(
+                        backend, vertices, faces, fixed=own_faces, target_faces=target
                     )
+                    vertices, faces = result.vertices, result.faces
                     # Per *cell*, not per level. A level-wide maximum would let one badly
-                    # decimated cell set the error for every cell at that level, and
+                    # simplified cell set the error for every cell at that level, and
                     # `lod_error` is exactly what a planner spends its budget against -- so a
                     # single bad cell would drag the whole level down to full detail and the
                     # octree would never be used.
-                    displacement[(level, cell)] = max(displacement.get((level, cell), 0.0), moved)
+                    displacement[(level, cell)] = max(
+                        displacement.get((level, cell), 0.0), result.error
+                    )
                     if at_floor or relaxed:
                         at_the_floor[level] += 1
 
@@ -400,11 +425,19 @@ def build_collection(
                     "lod_error": lod_error,
                     "object_count": len(ids),
                     "child_mask": _child_mask(cell, level, per_level),
+                    # The locator, left unfilled here on purpose: which part holds a cell and
+                    # which row group of it are facts about the *serialized* geometry, and
+                    # nothing knows them until `write_collection` has actually written it.
+                    "part": None,
+                    "row_group": None,
+                    "blob_bytes": None,
                 }
             )
         shards.append((level, build_table(rows, schemas["geometry"])))
 
-    _warn_if_decimation_missed(cell_rows, levels, locked, pinnable, grid.cell_size, at_the_floor)
+    _warn_if_decimation_missed(
+        cell_rows, levels, locked, pinnable, grid.cell_size, at_the_floor, schedule, backend
+    )
 
     object_rows = []
     for object_id in object_ids:
@@ -428,7 +461,7 @@ def build_collection(
 
     manifest = Manifest(
         grid=grid,
-        encoding=Encoding(codec=codec),
+        encoding=Encoding(codec=codec, decimation=schedule.declaration),
         axes=declared_axes,
         counts={
             "objects": len(object_ids),
@@ -449,47 +482,6 @@ def build_collection(
     )
 
 
-def _decimate_to_the_tightest_target_that_survives(
-    vertices: np.ndarray,
-    faces: np.ndarray,
-    *,
-    fixed: np.ndarray,
-    target_faces: int,
-) -> tuple[np.ndarray, np.ndarray, float, bool]:
-    """Decimate to ``target_faces``, relaxing the target if that target destroys the surface.
-
-    The collapse is greedy shortest-edge and has no validity test, so on some surfaces -- a
-    box, most clearly -- an aggressive target does not produce a coarse box, it produces
-    nothing at all: every edge collapses into its neighbour until no non-degenerate triangle is
-    left. Two responses are wrong and one is right.
-
-    Dropping the piece is wrong: **a level is a standalone representation of the whole
-    collection**, so an object missing from level 2 is not a coarser object, it is an object
-    that disappears when a viewer zooms out -- with nothing raised anywhere, because a level
-    that lost a row looks exactly like a level that never had one.
-
-    Keeping the piece *undecimated* is also wrong, and worse than it looks: it makes the coarse
-    level larger than the fine one it is supposed to summarise, which is a coarse level that
-    costs a fetch and saves nothing.
-
-    So the target is doubled until something survives -- the tightest reduction this decimator
-    can actually reach on this surface. Only if nothing survives at any target is the original
-    kept, which is the honest last resort.
-
-    Returns the vertices, faces, the largest distance a vertex moved, and whether the target
-    had to be relaxed.
-    """
-    attempt = target_faces
-    while attempt < len(faces):
-        kept_vertices, kept_faces, moved = decimate_fixed(
-            vertices, faces, fixed=fixed, target_faces=attempt
-        )
-        if len(kept_faces):
-            return kept_vertices, kept_faces, moved, attempt != target_faces
-        attempt *= 2
-    return vertices, faces, 0.0, True
-
-
 def _warn_if_decimation_missed(
     cell_rows: Sequence[Mapping[str, Any]],
     levels: int,
@@ -497,8 +489,10 @@ def _warn_if_decimation_missed(
     pinnable: int,
     cell_size: Sequence[int],
     at_the_floor: Mapping[int, int],
+    schedule: Decimation,
+    backend: Simplifier,
 ) -> None:
-    """Say so when ``decimation: QUARTER`` did not actually happen.
+    """Say so when the declared reduction did not actually happen.
 
     It is a declaration nothing downstream can check and no reader will notice, so a coarse
     level that saved nothing costs a file, an upload and a fetch while looking exactly like one
@@ -532,7 +526,7 @@ def _warn_if_decimation_missed(
     missed = [
         (level, faces_at[level] / faces_at[level - 1])
         for level in range(1, levels)
-        if faces_at[level - 1] and faces_at[level] / faces_at[level - 1] > 2 * 0.25
+        if faces_at[level - 1] and faces_at[level] / faces_at[level - 1] > 2 * schedule.ratio
     ]
     if not missed:
         return
@@ -546,22 +540,24 @@ def _warn_if_decimation_missed(
     floored = sum(at_the_floor.get(level, 0) for level, _ in missed)
     if floored:
         cause = (
-            f"{floored} object piece(s) had nothing left for `QUARTER` to take: they were already at the "
-            f"four-face floor, or decimating them to the target would have removed them from the level "
+            f"{floored} object piece(s) had nothing left to take: they were already at the "
+            f"{schedule.floor_faces}-face floor, or decimating them to the target would have removed them from the level "
             f"altogether -- and an object that vanishes when a viewer zooms out is a worse artifact than a "
             f"coarse level that saves little. This is expected for a collection of small objects."
         )
     else:
         cause = (
             f"{locked}/{pinnable} level-0 vertices ({locked / max(pinnable, 1):.0%}) lie on a cell face and are "
-            f"pinned by `boundary: LOCKED`, so the decimator cannot move them. The cell size "
+            f"pinned by `boundary: LOCKED`, so the {getattr(backend, 'name', 'simplifier')} backend cannot spend "
+            f"them. The cell size "
             f"{tuple(int(component) for component in cell_size)} is small relative to the objects -- pass a "
             f"larger `cell_size`, leave it unset so `choose_cell_size` picks one, or reduce `levels`, since a "
             f"coarse level that saves nothing still costs a file and a fetch."
         )
 
     warnings.warn(
-        f"`decimation: QUARTER` targets 25% of the faces per level, but {worst}. {cause}",
+        f"`decimation: {schedule.declaration}` targets {schedule.ratio:.0%} of the faces per level, "
+        f"but {worst}. {cause}",
         stacklevel=3,
     )
 

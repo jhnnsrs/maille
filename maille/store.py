@@ -11,10 +11,20 @@ What maille asks for is three methods::
     store.get(path)           # -> bytes, or anything with a .bytes() method
     store.list(prefix)        # -> the paths under a prefix
 
+and one it will *use if it is there*::
+
+    store.get_range(path, start=..., length=...)   # -> the bytes in that window
+
 That is deliberately the shape obstore already has, so ``S3Store``, ``LocalStore``,
 ``GCSStore``, ``AzureStore`` and ``MemoryStore`` are all usable **as they are** -- there is no
 adapter, and obstore is not a dependency of maille. :class:`DirectoryStore` is here so that a
 plain filesystem path works with no dependencies at all.
+
+``get_range`` is optional because it is the one method a hand-rolled store is likely to be
+missing, and its absence must degrade rather than fail: :func:`get_range_bytes` falls back to
+fetching the whole object and slicing it, which is exactly what maille did everywhere before
+range reads existed. What it buys when present is the whole point of the format -- reading one
+cell out of a level costs one row group rather than the level.
 
 Paths are always ``/``-joined and relative to the store, never absolute and never
 ``..``-relative: a collection names files inside its own tree, and a writer that could escape
@@ -55,6 +65,20 @@ class MailleStore(Protocol):
         ...
 
 
+@runtime_checkable
+class RangeReadable(Protocol):
+    """The optional fourth method, spelled the way obstore spells it.
+
+    Kept separate from :class:`MailleStore` so that a store without it still satisfies the
+    protocol maille requires -- ``isinstance(store, RangeReadable)`` is then the question
+    :func:`get_range_bytes` asks before deciding whether to fetch a window or the whole object.
+    """
+
+    def get_range(self, path: str, *, start: int, length: int | None = None) -> Any:  # noqa: ANN401
+        """Read ``length`` bytes from ``start``, or to the end when ``length`` is None."""
+        ...
+
+
 def join(*parts: str) -> str:
     """Join store path segments with ``/``, dropping empty ones.
 
@@ -86,7 +110,12 @@ def get_bytes(store: MailleStore, path: str) -> bytes:
     obstore hands back a ``GetResult`` rather than bytes, and a hand-rolled store usually hands
     back bytes; both are accepted here so neither has to know about the other.
     """
-    result = store.get(validate_relative(path))
+    path = validate_relative(path)
+    return _payload(store.get(path), store, path)
+
+
+def _payload(result: Any, store: MailleStore, path: str) -> bytes:  # noqa: ANN401
+    """Coerce whatever a store handed back into bytes."""
     if isinstance(result, (bytes, bytearray, memoryview)):
         return bytes(result)
     # `callable()` narrows to a callable returning `object`, so the payload is re-widened
@@ -99,10 +128,126 @@ def get_bytes(store: MailleStore, path: str) -> bytes:
     if callable(read):
         payload = read()
         return bytes(payload)
-    raise FormatError(
-        f"{type(store).__name__}.get returned {type(result).__name__}, which is neither bytes nor "
-        f"carries a .bytes() or .read() method, so maille cannot read {path!r} from it."
-    )
+    try:
+        # obstore's ranged reads hand back a `Bytes` -- no `.bytes()`, but a buffer, which is
+        # the cheapest thing it could return and the last shape worth accepting.
+        return bytes(memoryview(result))
+    except TypeError as error:
+        raise FormatError(
+            f"{type(store).__name__} returned {type(result).__name__}, which is not bytes, does not carry a "
+            f".bytes() or .read() method and is not a buffer, so maille cannot read {path!r} from it."
+        ) from error
+
+
+def get_range_bytes(store: MailleStore, path: str, start: int, length: int) -> bytes:
+    """Read ``length`` bytes from ``start`` of ``path``, however little the store can do.
+
+    A store carrying ``get_range`` serves the window; one without it has the whole object
+    fetched and sliced. **The fallback is correct but not cheap**, and it is the difference
+    between reading a cell and reading its level -- which is why the format bothers to record
+    where a cell's row group is at all.
+    """
+    if start < 0 or length < 0:
+        raise FormatError(f"A byte window starts at or after 0 and has a length of at least 0, got {start}:{length}.")
+    validate_relative(path)
+    ranged: Any = getattr(store, "get_range", None)
+    if callable(ranged):
+        window = ranged(path, start=start, length=length)
+        return _payload(window, store, path)
+    return get_bytes(store, path)[start : start + length]
+
+
+class StoreFile:
+    """A seekable, read-only binary file over a store, so pyarrow can range-read a Parquet part.
+
+    This exists because a row group's bytes are **not a Parquet file**: they carry no footer,
+    so a reader handed only that window has nothing to parse. Handing pyarrow a file-like
+    object instead lets ``ParquetFile.read_row_group`` decide which windows it needs -- the
+    footer once, then the column chunks of the one row group -- and every one of those reads
+    lands on :func:`get_range_bytes`.
+
+    ``size`` is passed in rather than discovered: the protocol has no ``head``, and the writer
+    already knew each part's length when it serialized it, so the manifest carries it. That
+    also keeps this working against a store that can neither stat nor list.
+    """
+
+    #: How much of the tail to pull on the first read into it. A Parquet footer is read as a
+    #: length-then-metadata pair, so serving it from one cached window turns three round trips
+    #: into one; 64 KiB covers the footer of any part maille writes.
+    TAIL_BYTES = 64 * 1024
+
+    def __init__(self, store: MailleStore, path: str, size: int) -> None:
+        """Bind one object in a store as a file of a known length."""
+        self.store = store
+        self.path = validate_relative(path)
+        self.size = int(size)
+        self._position = 0
+        self._closed = False
+        self._tail: bytes | None = None
+        self._tail_start = max(0, self.size - self.TAIL_BYTES)
+
+    def __repr__(self) -> str:
+        """Show the object and its length."""
+        return f"StoreFile({self.path!r}, size={self.size})"
+
+    def readable(self) -> bool:
+        """Always: this is a read-only view."""
+        return True
+
+    def seekable(self) -> bool:
+        """Always -- which is the entire reason it exists."""
+        return True
+
+    def writable(self) -> bool:
+        """Never."""
+        return False
+
+    @property
+    def closed(self) -> bool:
+        """Whether the file has been closed."""
+        return self._closed
+
+    def close(self) -> None:
+        """Close the file. Nothing is held open underneath, so this only flips the flag."""
+        self._closed = True
+
+    def tell(self) -> int:
+        """The current offset."""
+        return self._position
+
+    def seek(self, offset: int, whence: int = os.SEEK_SET) -> int:
+        """Move the offset, clamped to the object, and return where it landed."""
+        if whence == os.SEEK_SET:
+            target = offset
+        elif whence == os.SEEK_CUR:
+            target = self._position + offset
+        elif whence == os.SEEK_END:
+            target = self.size + offset
+        else:
+            raise FormatError(f"`whence` is one of SEEK_SET, SEEK_CUR or SEEK_END, got {whence!r}.")
+        self._position = max(0, min(int(target), self.size))
+        return self._position
+
+    def read(self, size: int | None = -1) -> bytes:
+        """Read up to ``size`` bytes from the current offset, to the end when negative."""
+        if self._closed:
+            raise ValueError(f"{self!r} is closed.")
+        remaining = self.size - self._position
+        count = remaining if size is None or size < 0 else min(int(size), remaining)
+        if count <= 0:
+            return b""
+        payload = self._window(self._position, count)
+        self._position += count
+        return payload
+
+    def _window(self, start: int, length: int) -> bytes:
+        """One window, served from the cached tail when it falls inside it."""
+        if start >= self._tail_start:
+            if self._tail is None:
+                self._tail = get_range_bytes(self.store, self.path, self._tail_start, self.size - self._tail_start)
+            offset = start - self._tail_start
+            return self._tail[offset : offset + length]
+        return get_range_bytes(self.store, self.path, start, length)
 
 
 def list_paths(store: MailleStore, prefix: str = "") -> list[str]:
@@ -173,6 +318,15 @@ class DirectoryStore:
             raise FileNotFoundError(f"No object at {path!r} in {self!r}.")
         return target.read_bytes()
 
+    def get_range(self, path: str, *, start: int, length: int | None = None) -> bytes:
+        """Read one window of a file, seeking rather than reading up to it."""
+        target = self._resolve(path)
+        if not target.is_file():
+            raise FileNotFoundError(f"No object at {path!r} in {self!r}.")
+        with target.open("rb") as handle:
+            handle.seek(int(start))
+            return handle.read(-1 if length is None else int(length))
+
     def list(self, prefix: str | None = None) -> Iterator[str]:
         """Yield the store-relative path of every file under ``prefix``."""
         base = self.root if not prefix else self._resolve(prefix)
@@ -208,6 +362,11 @@ class MemoryStore:
         except KeyError as error:
             raise FileNotFoundError(f"No object at {path!r} in {self!r}.") from error
 
+    def get_range(self, path: str, *, start: int, length: int | None = None) -> bytes:
+        """Return one window of the bytes held under a path."""
+        body = self.get(path)
+        return body[int(start) :] if length is None else body[int(start) : int(start) + int(length)]
+
     def list(self, prefix: str | None = None) -> Iterator[str]:
         """Yield every held path under ``prefix``."""
         head = (prefix or "").strip("/")
@@ -220,7 +379,10 @@ __all__ = [
     "DirectoryStore",
     "MailleStore",
     "MemoryStore",
+    "RangeReadable",
+    "StoreFile",
     "get_bytes",
+    "get_range_bytes",
     "join",
     "list_paths",
     "put_bytes",

@@ -53,6 +53,20 @@ vertices. Still worth matching ``cell_size`` to the source array's chunk shape, 
 order that shape is in -- a cell that matches the chunking means a viewer fetching image chunks
 and mesh cells pulls the same regions.
 
+Simplification
+--------------
+A coarse level is made by a pluggable backend. :class:`MeshoptSimplifier` is the default where
+``meshoptimizer`` is installed -- quadric-error, and it never invents a vertex position, which
+is what makes ``boundary: LOCKED`` provable rather than intended. :class:`GreedyEdgeCollapse`
+is the pure-numpy fallback, so the two-dependency core can still build a multi-level tree::
+
+    maille.build_collection(objects, cell_size=..., simplifier=maille.GreedyEdgeCollapse())
+    maille.build_collection(objects, cell_size=..., decimation=maille.Decimation.half())
+
+How much survives each level is :class:`Decimation`, defaulting to a quarter. Whatever it is,
+the manifest declares what was actually done: a ratio and its declaration are required to
+agree, because nothing downstream can re-derive one from the other.
+
 The byte format is documented in :mod:`maille.codec`; the boundary and decimation arguments in
 :mod:`maille.geometry`; the tree layout in :mod:`maille.manifest`.
 """
@@ -76,7 +90,7 @@ from maille.errors import (
     PartitioningError,
     UnfinishedCollectionError,
 )
-from maille.frames import REQUIRED_COLUMNS, arrow_schemas, validate_columns
+from maille.frames import DEFAULT_ROW_GROUP_BYTES, REQUIRED_COLUMNS, arrow_schemas, validate_columns
 from maille.geometry import decimate_fixed, snap_boundary
 from maille.manifest import (
     BOUNDARY_LOCKED,
@@ -84,13 +98,18 @@ from maille.manifest import (
     CODEC_MESHOPT,
     CODEC_NONE,
     COMPRESSION_NONE,
+    DECIMATION_CUSTOM,
+    DECIMATION_EIGHTH,
+    DECIMATION_HALF,
     DECIMATION_QUARTER,
     INDICES_UINT32,
     MANIFEST_NAME,
     OBJECT_CATALOG_PATH,
     POSITIONS_UINT16_QUANTIZED_PER_CELL,
     SPEC_VERSION,
+    Decimation,
     Encoding,
+    FileEntry,
     Grid,
     Manifest,
     level_part_path,
@@ -98,8 +117,15 @@ from maille.manifest import (
 )
 from maille.planner import Camera, plan_cells
 from maille.reader import CellEntry, Collection, DecodedCell, ObjectEntry, open_collection
+from maille.simplify import (
+    GreedyEdgeCollapse,
+    MeshoptSimplifier,
+    Simplified,
+    Simplifier,
+    auto_simplifier,
+)
 from maille.sources import Mesh, MeshSource, coerce_mesh
-from maille.store import DirectoryStore, MailleStore, MemoryStore
+from maille.store import DirectoryStore, MailleStore, MemoryStore, RangeReadable, StoreFile
 from maille.writer import awrite_collection, write_collection, write_meshes
 
 __all__ = [
@@ -108,7 +134,11 @@ __all__ = [
     "CODEC_MESHOPT",
     "CODEC_NONE",
     "COMPRESSION_NONE",
+    "DECIMATION_CUSTOM",
+    "DECIMATION_EIGHTH",
+    "DECIMATION_HALF",
     "DECIMATION_QUARTER",
+    "DEFAULT_ROW_GROUP_BYTES",
     "INDICES_UINT32",
     "MANIFEST_NAME",
     "OBJECT_CATALOG_PATH",
@@ -119,10 +149,13 @@ __all__ = [
     "Camera",
     "CellEntry",
     "Collection",
+    "Decimation",
     "DecodedCell",
     "DirectoryStore",
     "Encoding",
+    "FileEntry",
     "FormatError",
+    "GreedyEdgeCollapse",
     "Grid",
     "MailleError",
     "MailleStore",
@@ -131,11 +164,17 @@ __all__ = [
     "Mesh",
     "MeshCollection",
     "MeshSource",
+    "MeshoptSimplifier",
     "MissingExtraError",
     "ObjectEntry",
     "PartitioningError",
+    "RangeReadable",
+    "Simplified",
+    "Simplifier",
+    "StoreFile",
     "UnfinishedCollectionError",
     "arrow_schemas",
+    "auto_simplifier",
     "awrite_collection",
     "build_collection",
     "cell_box",

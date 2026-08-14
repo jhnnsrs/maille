@@ -49,9 +49,9 @@ def test_everything_the_manifest_names_exists_before_the_manifest_does(collectio
 
     maille.write_collection(collection, store, "c")
 
-    manifest = json.loads(store.objects["c/meshed.json"])
-    named = [manifest["files"]["cells"], manifest["files"]["objects"]]
-    named += [path for paths in manifest["files"]["levels"].values() for path in paths]
+    files = json.loads(store.objects["c/meshed.json"])["files"]
+    named = [files["cells"]["path"], files["objects"]["path"]]
+    named += [entry["path"] for entries in files["levels"].values() for entry in entries]
 
     written_before_manifest = set(store.order[:-1])
     for path in named:
@@ -74,10 +74,16 @@ def test_the_written_manifest_names_the_parts_that_actually_landed(collection: m
 
     manifest = maille.write_collection(collection, store, "c")
 
-    for level, paths in manifest.files["levels"].items():
-        assert paths, f"level {level} claims no parts"
-        for path in paths:
-            assert f"c/{path}" in store.objects
+    for level in range(manifest.grid.levels):
+        entries = manifest.level_files(level)
+        assert entries, f"level {level} claims no parts"
+        for entry in entries:
+            assert f"c/{entry.path}" in store.objects
+            assert entry.size == len(store.objects[f"c/{entry.path}"]), (
+                "the recorded length is what lets a reader seek to a Parquet footer without "
+                "being able to stat the object, so a wrong one is worse than an absent one"
+            )
+            assert entry.row_groups and entry.row_groups >= 1
 
 
 def test_a_large_level_is_split_across_parts_and_still_reads_as_one(collection: maille.MeshCollection):
@@ -87,9 +93,9 @@ def test_a_large_level_is_split_across_parts_and_still_reads_as_one(collection: 
     # A budget far below one cell's blobs, so every cell becomes its own part.
     manifest = maille.write_collection(collection, store, "c", max_part_bytes=1)
 
-    level_zero = manifest.files["levels"]["0"]
-    assert len(level_zero) > 1, "the level should have been split"
-    assert level_zero == sorted(level_zero), "parts are numbered in order"
+    paths = [entry.path for entry in manifest.level_files(0) or []]
+    assert len(paths) > 1, "the level should have been split"
+    assert paths == sorted(paths), "parts are numbered in order"
 
     opened = maille.open_collection(store, "c")
     assert opened.geometry(0).num_rows == collection.shards[0][1].num_rows, "the parts read back as one level"

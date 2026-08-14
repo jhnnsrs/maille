@@ -54,4 +54,23 @@ for describe, call in [
         print(f"FAIL: {describe} appears to be installed, so this job is not testing what it claims")
         sys.exit(1)
 
+# 5. And the fallback simplifier keeps multi-level builds possible with no extras at all.
+#    `auto_simplifier` picks it because meshoptimizer cannot be imported here.
+from maille.simplify import GreedyEdgeCollapse, auto_simplifier
+
+assert isinstance(auto_simplifier(), GreedyEdgeCollapse), "the fallback backend was not chosen"
+
+import numpy as np
+
+box = (
+    np.array([[0.0, 0, 0], [40, 0, 0], [40, 30, 0], [0, 30, 0],
+              [0, 0, 20], [40, 0, 20], [40, 30, 20], [0, 30, 20]], dtype=float) + 10.0,
+    np.array([[0, 1, 2], [0, 2, 3], [4, 6, 5], [4, 7, 6], [0, 4, 5], [0, 5, 1],
+              [1, 5, 6], [1, 6, 2], [2, 6, 7], [2, 7, 3], [3, 7, 4], [3, 4, 0]]),
+)
+collection = maille.build_collection({1: box}, cell_size=(64, 64, 64), levels=3, codec=maille.CODEC_NONE)
+assert len(collection.shards) == 3, collection.shards
+assert all(shard.num_rows for _, shard in collection.shards), "a level came out empty"
+print(f"a 3-level collection builds with no extras (backend: {auto_simplifier().name})")
+
 print("maille works, and refuses helpfully, on numpy + pyarrow alone")

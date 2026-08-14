@@ -24,6 +24,7 @@ REQUIRED_COLUMNS: dict[str, tuple[str, ...]] = {
         "bbox_min_x", "bbox_min_y", "bbox_min_z",
         "bbox_max_x", "bbox_max_y", "bbox_max_z",
         "lod_error", "object_count", "child_mask",
+        "part", "row_group", "blob_bytes",
     ),
     "object_catalog": (
         "object_id", "ordinal",
@@ -67,6 +68,13 @@ def arrow_schemas() -> dict[str, Any]:
             pa.field("lod_error", pa.float64()),
             pa.field("object_count", pa.int32()),
             pa.field("child_mask", pa.uint8()),
+            # The locator: which part of the level holds this cell, and which row group of it.
+            # Null on a built-but-unwritten collection -- part assignment and row-group
+            # boundaries are only known once the geometry has actually been serialized, so the
+            # writer fills these in and nothing before it can.
+            pa.field("part", pa.int32(), nullable=True),
+            pa.field("row_group", pa.int32(), nullable=True),
+            pa.field("blob_bytes", pa.int64(), nullable=True),
         ]),
         "object_catalog": pa.schema([
             pa.field("object_id", pa.int64()),
@@ -149,6 +157,77 @@ def table_to_parquet(table: Any, *, compression: str = "zstd") -> bytes:  # noqa
     return bytes(sink.getvalue().to_pybytes())
 
 
+#: How many bytes of geometry a row group aims to hold. **This is the knob the whole
+#: range-reading story turns on**, and it is a two-sided one: a row group is the smallest thing
+#: a reader can fetch, so a large one means fetching a cell drags its neighbours along -- but a
+#: Parquet footer grows with row-group count, and the footer is read on every part a reader
+#: opens. Chunk too finely and a viewer trades "download the level" for "download a big footer",
+#: which is a worse deal on the first cell and no better on the rest.
+#:
+#: 512 KiB sits where a row group holds a handful of cells rather than one or hundreds. The
+#: footer is cached per part for the life of a reader, so its cost is paid once per session
+#: while the row-group cost is paid per fetch -- which is the asymmetry this number is picked
+#: against.
+DEFAULT_ROW_GROUP_BYTES = 512 * 1024
+
+
+def blob_sizes(table: Any) -> list[int]:  # noqa: ANN401
+    """How many bytes of geometry each row of a shard carries.
+
+    Budgeting on the blobs rather than on a row count is what keeps chunks even: a cell holding
+    one small object and a cell holding two hundred differ by orders of magnitude in bytes and
+    not at all in rows.
+    """
+    positions = table.column("positions").to_pylist()
+    indices = table.column("indices").to_pylist()
+    return [len(p or b"") + len(i or b"") for p, i in zip(positions, indices)]
+
+
+def plan_byte_chunks(sizes: Sequence[int], budget: int) -> list[tuple[int, int]]:
+    """Group consecutive rows into ``(start, count)`` runs that each fit ``budget`` bytes.
+
+    Used twice, at two scales: to split a level into parts, and to split a part into row
+    groups. A single row larger than the budget still goes in a run of its own rather than
+    being split -- a cell is the smallest thing a reader fetches.
+    """
+    if not sizes:
+        return [(0, 0)]
+    chunks: list[tuple[int, int]] = []
+    start = 0
+    running = 0
+    for row, size in enumerate(sizes):
+        if running and running + size > budget:
+            chunks.append((start, row - start))
+            start, running = row, 0
+        running += size
+    chunks.append((start, len(sizes) - start))
+    return chunks
+
+
+def table_to_chunked_parquet(
+    table: Any,  # noqa: ANN401
+    *,
+    row_group_bytes: int = DEFAULT_ROW_GROUP_BYTES,
+    compression: str = "zstd",
+) -> tuple[bytes, list[tuple[int, int]]]:
+    """Serialize a geometry shard with one row group per byte-budgeted run of cells.
+
+    Returns the Parquet bytes and the ``(start_row, row_count)`` of each row group, in order --
+    which is what lets the writer record, per cell, the row group a reader must fetch to get
+    it. Separate from :func:`table_to_parquet` rather than an argument to it: the catalogs are
+    read whole and have no use for either the chunking or the second return value.
+    """
+    pa = require_pyarrow()
+    import pyarrow.parquet as pq  # type: ignore
+
+    chunks = plan_byte_chunks(blob_sizes(table), row_group_bytes)
+    sink = pa.BufferOutputStream()
+    with pq.ParquetWriter(sink, table.schema, compression=compression) as writer:
+        for start, count in chunks:
+            writer.write_table(table.slice(start, count))
+    return bytes(sink.getvalue().to_pybytes()), chunks
+
+
 def parquet_to_table(body: bytes) -> Any:  # noqa: ANN401
     """Read Parquet bytes back into an Arrow table."""
     pa = require_pyarrow()
@@ -158,11 +237,15 @@ def parquet_to_table(body: bytes) -> Any:  # noqa: ANN401
 
 
 __all__ = [
+    "DEFAULT_ROW_GROUP_BYTES",
     "REQUIRED_COLUMNS",
     "arrow_schemas",
+    "blob_sizes",
     "build_table",
     "parquet_to_table",
+    "plan_byte_chunks",
     "require_pyarrow",
+    "table_to_chunked_parquet",
     "table_to_parquet",
     "validate_columns",
 ]

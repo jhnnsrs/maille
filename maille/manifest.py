@@ -45,7 +45,13 @@ from maille.errors import FormatError
 
 #: The format version this writer emits and this reader accepts. It selects how every byte in
 #: the prefix is read, so it is never defaulted on a reader's behalf and never guessed.
-SPEC_VERSION = "3"
+#:
+#: 4 adds the two things a reader needs to fetch *one cell* rather than its whole level: the
+#: ``part`` / ``row_group`` locator on every cell-catalog row, and a byte length beside every
+#: file named in ``files``. The length is what lets a reader range-read a Parquet part without
+#: being able to stat it -- a store is only asked for ``get``/``put``/``list``, and an HTTP one
+#: can do neither ``head`` nor ``list``.
+SPEC_VERSION = "4"
 
 #: The manifest's name, at the root of the collection's prefix.
 MANIFEST_NAME = "meshed.json"
@@ -93,8 +99,13 @@ COMPRESSION_ZSTD = "ZSTD"
 BOUNDARY_LOCKED = "LOCKED"
 BOUNDARY_OPEN = "OPEN"
 
-#: Level ``L`` targets ``(1/4)**L`` of the level-0 face count.
+#: Level ``L`` targets ``ratio**L`` of the level-0 face count. ``QUARTER`` is the default and
+#: the only value the original spec defined; the rest are maille naming what it actually did,
+#: because declaring ``QUARTER`` over a different ratio would be a claim no check could catch.
 DECIMATION_QUARTER = "QUARTER"
+DECIMATION_HALF = "HALF"
+DECIMATION_EIGHTH = "EIGHTH"
+DECIMATION_CUSTOM = "CUSTOM"
 
 SORT_KEY_MORTON = "MORTON"
 
@@ -104,13 +115,60 @@ _ENCODING_VOCABULARY: dict[str, frozenset[str]] = {
     "codec": frozenset({CODEC_MESHOPT, CODEC_NONE}),
     "compression": frozenset({COMPRESSION_NONE, COMPRESSION_ZSTD}),
     "boundary": frozenset({BOUNDARY_LOCKED, BOUNDARY_OPEN}),
-    "decimation": frozenset({DECIMATION_QUARTER}),
+    "decimation": frozenset({DECIMATION_QUARTER, DECIMATION_HALF, DECIMATION_EIGHTH, DECIMATION_CUSTOM}),
 }
 
 #: The keys a reader cannot work without, and which are therefore never defaulted. ``codec``
 #: and ``compression`` are the load-bearing pair: guessing them does not produce an error, it
 #: produces geometry that decodes to garbage.
 _REQUIRED_ENCODING_KEYS = ("positions", "indices", "codec", "compression", "boundary", "decimation")
+
+
+@dataclass(frozen=True)
+class FileEntry:
+    """One file the manifest names, with what a reader needs to range-read it.
+
+    ``size`` is here because **nothing else in the tree can tell a reader how long a file is**.
+    maille asks a store for ``put``/``get``/``list`` and nothing more, so there is no ``head``
+    to call, and an HTTP-backed store usually cannot list either. Yet the length is the first
+    thing a Parquet reader needs: the footer lives at the end, so a reader that cannot seek to
+    the end cannot parse the file at all without downloading it whole -- which is the exact
+    thing the locator exists to avoid.
+
+    The writer knows it for free (it had just serialized the bytes), so it records it. When it
+    is absent -- a hand-written manifest -- a reader falls back to fetching the part whole,
+    which is correct and merely slow.
+    """
+
+    path: str
+    size: int | None = None
+    row_groups: int | None = None
+
+    def to_dict(self) -> dict[str, Any]:
+        """The entry as it is written, omitting what was never measured."""
+        written: dict[str, Any] = {"path": self.path}
+        if self.size is not None:
+            written["bytes"] = int(self.size)
+        if self.row_groups is not None:
+            written["rowGroups"] = int(self.row_groups)
+        return written
+
+    @classmethod
+    def from_any(cls, raw: Any) -> FileEntry:  # noqa: ANN401
+        """Read an entry, accepting a bare path string for a hand-written manifest."""
+        if isinstance(raw, str):
+            return cls(path=raw)
+        if isinstance(raw, Mapping) and isinstance(raw.get("path"), str):
+            size = raw.get("bytes")
+            groups = raw.get("rowGroups")
+            return cls(
+                path=str(raw["path"]),
+                size=None if size is None else int(size),
+                row_groups=None if groups is None else int(groups),
+            )
+        raise FormatError(
+            f"A file entry in a manifest is a path, or an object carrying one, got {raw!r}."
+        )
 
 
 @dataclass(frozen=True)
@@ -171,6 +229,80 @@ class Grid:
         """How many voxels a cell spans per axis at ``level``."""
         scale = 2**int(level)
         return tuple(float(component) * scale for component in self.cell_size)  # type: ignore[return-value]
+
+
+#: The ratios that have a name of their own. Anything else is ``CUSTOM``.
+_NAMED_RATIOS: dict[float, str] = {
+    0.25: DECIMATION_QUARTER,
+    0.5: DECIMATION_HALF,
+    0.125: DECIMATION_EIGHTH,
+}
+
+
+@dataclass(frozen=True)
+class Decimation:
+    """How much of a level survives into the next one, and what to call that in the manifest.
+
+    Level ``L`` targets ``ratio**L`` of the level-0 face count, with ``floor_faces`` as the
+    smallest budget any one object's piece is given -- below a few triangles there is nothing
+    left to take, and taking it anyway removes the object from the level.
+
+    ``declaration`` is what lands in ``encoding.decimation``, and it is **checked against the
+    ratio rather than trusted**: a writer that declared ``QUARTER`` while reducing by half would
+    be making a claim about the geometry that nothing downstream could test, so the two are
+    required to agree. Use the constructors and this never comes up.
+    """
+
+    ratio: float = 0.25
+    floor_faces: int = 4
+    declaration: str = DECIMATION_QUARTER
+
+    def __post_init__(self) -> None:
+        """Refuse a schedule that cannot coarsen, or a name that misdescribes one."""
+        if not 0.0 < self.ratio < 1.0:
+            raise FormatError(
+                f"`ratio` is the fraction of faces a level keeps of the one below, so it lies between 0 and 1, "
+                f"got {self.ratio}."
+            )
+        if self.floor_faces < 4:
+            raise FormatError(f"`floor_faces` is at least one tetrahedron's worth, 4, got {self.floor_faces}.")
+        if self.declaration not in _ENCODING_VOCABULARY["decimation"]:
+            raise FormatError(
+                f"`declaration` is {self.declaration!r}; the format defines "
+                f"{', '.join(sorted(_ENCODING_VOCABULARY['decimation']))}."
+            )
+        expected = _NAMED_RATIOS.get(round(self.ratio, 10), DECIMATION_CUSTOM)
+        if self.declaration != expected:
+            raise FormatError(
+                f"A ratio of {self.ratio} is {expected}, not {self.declaration}. The declaration travels with the "
+                f"geometry and nothing downstream can re-derive it, so it is required to describe what was actually "
+                f"done -- use Decimation.custom({self.ratio}) if that is the reduction you want."
+            )
+
+    @classmethod
+    def quarter(cls, floor_faces: int = 4) -> Decimation:
+        """A quarter of the faces per level: the format's default, and the spec's only name."""
+        return cls(ratio=0.25, floor_faces=floor_faces, declaration=DECIMATION_QUARTER)
+
+    @classmethod
+    def half(cls, floor_faces: int = 4) -> Decimation:
+        """Half the faces per level: gentler, so more levels are needed to reach a given budget."""
+        return cls(ratio=0.5, floor_faces=floor_faces, declaration=DECIMATION_HALF)
+
+    @classmethod
+    def eighth(cls, floor_faces: int = 4) -> Decimation:
+        """An eighth per level: aggressive, and matches an octree's cell count per level."""
+        return cls(ratio=0.125, floor_faces=floor_faces, declaration=DECIMATION_EIGHTH)
+
+    @classmethod
+    def custom(cls, ratio: float, floor_faces: int = 4) -> Decimation:
+        """Any other ratio, declared as ``CUSTOM`` so the manifest does not misdescribe it."""
+        named = _NAMED_RATIOS.get(round(ratio, 10), DECIMATION_CUSTOM)
+        return cls(ratio=ratio, floor_faces=floor_faces, declaration=named)
+
+    def target_faces(self, faces: int, level: int) -> int:
+        """The face budget for a piece of ``faces`` triangles at ``level``."""
+        return max(self.floor_faces, round(faces * (self.ratio**level)))
 
 
 @dataclass(frozen=True)
@@ -283,6 +415,26 @@ class Manifest:
             files=dict(raw.get("files") or {}),
         )
 
+    def catalog_file(self, role: str, fallback: str) -> FileEntry:
+        """Where the manifest says a catalog is, or where the format puts it."""
+        declared = (self.files or {}).get(role)
+        return FileEntry(path=fallback) if declared is None else FileEntry.from_any(declared)
+
+    def level_files(self, level: int) -> list[FileEntry] | None:
+        """The parts holding one level, or ``None`` if the manifest does not say.
+
+        ``None`` rather than an empty list, because "this manifest names no parts" and "this
+        level has no parts" are different answers: the first sends a reader to the store's
+        listing, the second would send it nowhere.
+        """
+        declared = (self.files or {}).get("levels")
+        if not isinstance(declared, Mapping):
+            return None
+        entries = declared.get(str(int(level)))
+        if not isinstance(entries, Sequence) or isinstance(entries, str) or not entries:
+            return None
+        return [FileEntry.from_any(entry) for entry in entries]
+
     @classmethod
     def from_json(cls, body: bytes) -> Manifest:
         """Parse a manifest's bytes, naming a truncated one for what it is."""
@@ -334,6 +486,9 @@ __all__ = [
     "CODEC_NONE",
     "COMPRESSION_NONE",
     "COMPRESSION_ZSTD",
+    "DECIMATION_CUSTOM",
+    "DECIMATION_EIGHTH",
+    "DECIMATION_HALF",
     "DECIMATION_QUARTER",
     "INDICES_UINT16",
     "INDICES_UINT32",
@@ -343,6 +498,7 @@ __all__ = [
     "SORT_KEY_MORTON",
     "SPEC_VERSION",
     "Encoding",
+    "FileEntry",
     "Grid",
     "Manifest",
     "level_part_path",

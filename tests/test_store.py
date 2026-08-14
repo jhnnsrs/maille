@@ -127,7 +127,7 @@ def test_a_store_whose_get_returns_something_unreadable_says_so():
         def list(self, prefix: str | None = None) -> list[str]:
             return []
 
-    with pytest.raises(maille.FormatError, match="neither bytes nor"):
+    with pytest.raises(maille.FormatError, match="is not bytes"):
         get_bytes(Odd(), "a")  # type: ignore[arg-type]
 
 

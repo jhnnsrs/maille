@@ -13,7 +13,10 @@ from maille.manifest import Encoding, Grid, Manifest, level_part_path, level_pre
 def a_manifest(**overrides: object) -> dict:
     """A conforming manifest as a dict, with fields overridden for the refusal tests."""
     base = {
-        "specVersion": "3",
+        # The version this build emits, rather than a literal: these tests are about what a
+        # manifest must carry, and pinning a number here would fail the format's next version
+        # for reasons that have nothing to do with what each test checks.
+        "specVersion": maille.SPEC_VERSION,
         "grid": {"cellSize": [128, 128, 64], "levels": 3, "sortKey": "MORTON"},
         "encoding": {
             "positions": "UINT16_QUANTIZED_PER_CELL",
@@ -64,7 +67,9 @@ def test_the_stored_encoding_is_resolved_rather_than_sparse():
 def test_an_unreadable_version_is_refused_rather_than_read_anyway():
     """The version selects how every byte in the prefix is read."""
     with pytest.raises(maille.FormatError, match="cannot read"):
-        Manifest.from_dict(a_manifest(specVersion="4"))
+        Manifest.from_dict(a_manifest(specVersion=str(int(maille.SPEC_VERSION) + 1)))
+    with pytest.raises(maille.FormatError, match="cannot read"):
+        Manifest.from_dict(a_manifest(specVersion=str(int(maille.SPEC_VERSION) - 1)))
     with pytest.raises(maille.FormatError, match="cannot read"):
         Manifest.from_dict(a_manifest(specVersion=""))
 

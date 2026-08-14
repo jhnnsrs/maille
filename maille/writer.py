@@ -19,14 +19,24 @@ from dataclasses import replace
 from typing import TYPE_CHECKING, Any
 
 from maille.build import MeshCollection, build_collection
-from maille.frames import table_to_parquet, validate_columns
+from maille.frames import (
+    DEFAULT_ROW_GROUP_BYTES,
+    blob_sizes,
+    plan_byte_chunks,
+    table_to_chunked_parquet,
+    table_to_parquet,
+    validate_columns,
+)
 from maille.manifest import (
     CELL_CATALOG_PATH,
     MANIFEST_NAME,
     OBJECT_CATALOG_PATH,
+    Decimation,
+    FileEntry,
     Manifest,
     level_part_path,
 )
+from maille.simplify import Simplifier
 from maille.sources import MeshSource
 from maille.store import MailleStore, join, put_bytes
 
@@ -41,31 +51,50 @@ DEFAULT_MAX_PART_BYTES = 512 * 1024 * 1024
 def _plan_parts(shard: pa.Table, max_part_bytes: int) -> list[pa.Table]:
     """Split one level's rows into parts, budgeting on the blob bytes each row carries.
 
-    Budgeting on the blobs rather than on a row count is what keeps parts even: a cell holding
-    one small object and a cell holding two hundred differ by orders of magnitude in bytes and
-    not at all in rows.
+    The same byte-budgeted grouping that cuts a part into row groups, one scale up -- see
+    :func:`maille.frames.plan_byte_chunks`, which both go through.
     """
     if shard.num_rows == 0:
         return [shard]
-
-    positions = shard.column("positions").to_pylist()
-    indices = shard.column("indices").to_pylist()
-    sizes = [len(p or b"") + len(i or b"") for p, i in zip(positions, indices)]
+    sizes = blob_sizes(shard)
     if sum(sizes) <= max_part_bytes:
         return [shard]
+    return [shard.slice(start, count) for start, count in plan_byte_chunks(sizes, max_part_bytes)]
 
-    parts: list[pa.Table] = []
-    start = 0
-    running = 0
-    for row, size in enumerate(sizes):
-        # A single row larger than the budget still goes in a part of its own rather than
-        # being split -- a cell is the smallest thing a reader fetches.
-        if running and running + size > max_part_bytes:
-            parts.append(shard.slice(start, row - start))
-            start, running = row, 0
-        running += size
-    parts.append(shard.slice(start, len(sizes) - start))
-    return parts
+
+def _locate(shard: pa.Table, part: int, chunks: Sequence[tuple[int, int]]) -> dict[tuple[int, int], tuple[int, int, int]]:
+    """Map each cell in a written part to the part and row group a reader must fetch for it."""
+    levels = shard.column("level").to_pylist()
+    cells = shard.column("cell").to_pylist()
+    sizes = blob_sizes(shard)
+    found: dict[tuple[int, int], tuple[int, int, int]] = {}
+    for group, (start, count) in enumerate(chunks):
+        for row in range(start, start + count):
+            found[(int(levels[row]), int(cells[row]))] = (part, group, sizes[row])
+    return found
+
+
+def _with_locators(catalog: pa.Table, locators: Mapping[tuple[int, int], tuple[int, int, int]]) -> pa.Table:
+    """Fill the cell catalog's ``part`` / ``row_group`` / ``blob_bytes`` from what was written.
+
+    A cell the geometry does not hold keeps its nulls rather than being dropped or defaulted:
+    a catalog row without a locator is a real inconsistency, and :func:`maille.verify` should
+    be the thing that says so -- not a silent zero here that points a reader at row group 0 of
+    part 0 and hands it the wrong cell.
+    """
+    import pyarrow as pa
+
+    keys = list(zip(catalog.column("level").to_pylist(), catalog.column("cell").to_pylist()))
+    resolved = [locators.get((int(level), int(cell))) for level, cell in keys]
+    columns = {
+        "part": pa.array([None if item is None else item[0] for item in resolved], type=pa.int32()),
+        "row_group": pa.array([None if item is None else item[1] for item in resolved], type=pa.int32()),
+        "blob_bytes": pa.array([None if item is None else item[2] for item in resolved], type=pa.int64()),
+    }
+    filled = catalog
+    for name, values in columns.items():
+        filled = filled.set_column(filled.schema.get_field_index(name), catalog.schema.field(name), values)
+    return filled
 
 
 def write_collection(
@@ -74,30 +103,50 @@ def write_collection(
     prefix: str = "",
     *,
     max_part_bytes: int = DEFAULT_MAX_PART_BYTES,
+    row_group_bytes: int = DEFAULT_ROW_GROUP_BYTES,
 ) -> Manifest:
     """Write a built collection into ``store`` under ``prefix``, manifest last.
 
-    Returns the manifest as written -- which is not always the one the collection was built
-    with: ``files`` is rewritten to name the parts that actually landed, so a reader that
-    cannot list a prefix (an HTTP store, say) can still find every level.
+    Returns the manifest as written -- which is not the one the collection was built with:
+    ``files`` is rewritten to name the parts that actually landed *and how long each one is*,
+    so a reader that can neither list nor stat a prefix (an HTTP store, say) can still find
+    every level and range-read inside it.
+
+    **The geometry goes first, then the catalog that points into it, then the manifest.** The
+    cell catalog cannot be written before the geometry any more: it carries the part and row
+    group holding each cell, and those are facts about bytes that do not exist until they have
+    been serialized. That ordering is also strictly safer than the reverse -- an interrupted
+    write can now leave a catalog pointing at nothing only if it also leaves no manifest, which
+    is already the signal for an unfinished collection.
     """
     validate_columns(collection.cell_catalog, "cell_catalog")
     validate_columns(collection.object_catalog, "object_catalog")
     for _, shard in collection.shards:
         validate_columns(shard, "geometry")
 
-    written: dict[str, Any] = {"cells": CELL_CATALOG_PATH, "objects": OBJECT_CATALOG_PATH, "levels": {}}
-
-    put_bytes(store, join(prefix, CELL_CATALOG_PATH), table_to_parquet(collection.cell_catalog))
-    put_bytes(store, join(prefix, OBJECT_CATALOG_PATH), table_to_parquet(collection.object_catalog))
+    levels: dict[str, list[dict[str, Any]]] = {}
+    locators: dict[tuple[int, int], tuple[int, int, int]] = {}
 
     for level, shard in sorted(collection.shards, key=lambda item: item[0]):
-        paths: list[str] = []
+        entries: list[FileEntry] = []
         for number, part in enumerate(_plan_parts(shard, max_part_bytes)):
+            body, chunks = table_to_chunked_parquet(part, row_group_bytes=row_group_bytes)
             path = level_part_path(level, number)
-            put_bytes(store, join(prefix, path), table_to_parquet(part))
-            paths.append(path)
-        written["levels"][str(level)] = paths
+            put_bytes(store, join(prefix, path), body)
+            entries.append(FileEntry(path=path, size=len(body), row_groups=len(chunks)))
+            locators.update(_locate(part, number, chunks))
+        levels[str(level)] = [entry.to_dict() for entry in entries]
+
+    catalog = table_to_parquet(_with_locators(collection.cell_catalog, locators))
+    put_bytes(store, join(prefix, CELL_CATALOG_PATH), catalog)
+    objects = table_to_parquet(collection.object_catalog)
+    put_bytes(store, join(prefix, OBJECT_CATALOG_PATH), objects)
+
+    written: dict[str, Any] = {
+        "cells": FileEntry(path=CELL_CATALOG_PATH, size=len(catalog)).to_dict(),
+        "objects": FileEntry(path=OBJECT_CATALOG_PATH, size=len(objects)).to_dict(),
+        "levels": levels,
+    }
 
     # Everything the manifest names now exists. Only now is the collection a collection.
     manifest = replace(collection.manifest, files=written)
@@ -111,6 +160,7 @@ async def awrite_collection(
     prefix: str = "",
     *,
     max_part_bytes: int = DEFAULT_MAX_PART_BYTES,
+    row_group_bytes: int = DEFAULT_ROW_GROUP_BYTES,
 ) -> Manifest:
     """Write a collection without blocking the event loop.
 
@@ -119,7 +169,12 @@ async def awrite_collection(
     manifest-last ordering trivially true instead of a scheduling question.
     """
     return await asyncio.to_thread(
-        write_collection, collection, store, prefix, max_part_bytes=max_part_bytes
+        write_collection,
+        collection,
+        store,
+        prefix,
+        max_part_bytes=max_part_bytes,
+        row_group_bytes=row_group_bytes,
     )
 
 
@@ -132,13 +187,17 @@ def write_meshes(
     cell_size: Sequence[int] | None = None,
     levels: int = 3,
     codec: str | None = None,
+    simplifier: Simplifier | None = None,
+    decimation: Decimation | None = None,
     max_part_bytes: int = DEFAULT_MAX_PART_BYTES,
+    row_group_bytes: int = DEFAULT_ROW_GROUP_BYTES,
 ) -> Manifest:
     """Build a collection from objects and write it, in one call.
 
     The convenience form of :func:`maille.build_collection` followed by
     :func:`write_collection`. Build them separately when you want to inspect or check the
-    frames before spending the writes.
+    frames before spending the writes. ``simplifier`` and ``decimation`` are how the coarse
+    levels are made; see :func:`maille.build_collection`.
     """
     from maille.manifest import CODEC_MESHOPT
 
@@ -148,8 +207,12 @@ def write_meshes(
         cell_size=cell_size,
         levels=levels,
         codec=codec or CODEC_MESHOPT,
+        simplifier=simplifier,
+        decimation=decimation,
     )
-    return write_collection(collection, store, prefix, max_part_bytes=max_part_bytes)
+    return write_collection(
+        collection, store, prefix, max_part_bytes=max_part_bytes, row_group_bytes=row_group_bytes
+    )
 
 
 __all__ = ["DEFAULT_MAX_PART_BYTES", "awrite_collection", "write_collection", "write_meshes"]

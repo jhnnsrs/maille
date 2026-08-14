@@ -73,6 +73,51 @@ def opened(written: maille.MemoryStore) -> maille.Collection:
     return maille.open_collection(written, "collection")
 
 
+class AccountingStore(maille.MemoryStore):
+    """A store that records how many bytes each read actually moved.
+
+    The point of the locator is a number -- how much a viewer transfers to draw a cell -- and a
+    number is only a claim until something asserts it. Reads are counted at the outermost call
+    so a ranged read is one entry, not two: ``MemoryStore.get_range`` is implemented on top of
+    ``get``, and counting both would double every window.
+    """
+
+    def __init__(self) -> None:
+        """Start empty, with nothing read yet."""
+        super().__init__()
+        self.reads: list[tuple[str, int]] = []
+        self._depth = 0
+
+    def _record(self, path: str, body: bytes) -> bytes:
+        if self._depth == 1:
+            self.reads.append((path, len(body)))
+        return body
+
+    def get(self, path: str) -> bytes:
+        """Read whole, counting it unless it is serving a range read."""
+        self._depth += 1
+        try:
+            return self._record(path, super().get(path))
+        finally:
+            self._depth -= 1
+
+    def get_range(self, path: str, *, start: int, length: int | None = None) -> bytes:
+        """Read a window, counting the window rather than the object behind it."""
+        self._depth += 1
+        try:
+            return self._record(path, super().get_range(path, start=start, length=length))
+        finally:
+            self._depth -= 1
+
+    def bytes_read(self, containing: str = "level=") -> int:
+        """How many bytes the recorded reads moved, for paths matching ``containing``."""
+        return sum(size for path, size in self.reads if containing in path)
+
+    def forget(self) -> None:
+        """Drop the record, so the next measurement starts from zero."""
+        self.reads.clear()
+
+
 def vertices_of(mesh: Any) -> np.ndarray:  # noqa: ANN401
     """The vertices of a trimesh or a maille Mesh, as a float array."""
     return np.asarray(mesh.vertices, dtype=np.float64)

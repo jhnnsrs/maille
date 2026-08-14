@@ -64,17 +64,34 @@ def decimate_fixed(
     *,
     fixed: np.ndarray,
     target_faces: int,
+    check_interval: int | None = None,
+    placement: str = "midpoint",
 ) -> tuple[np.ndarray, np.ndarray, float]:
     """Collapse shortest edges until ``target_faces`` remain, never moving a fixed vertex.
 
-    Greedy and not quadric-optimal, deliberately: ``QUARTER`` is a face-count ratio and
-    ``LOCKED`` is boundary immobility, and neither asks for optimality. An edge with two fixed
-    endpoints is never collapsed; an edge with one is collapsed *onto* the fixed vertex, which
-    is what keeps a cell face plane exactly where the clip put it.
+    Greedy and not quadric-optimal: ``QUARTER`` is a face-count ratio and ``LOCKED`` is boundary
+    immobility, and neither asks for optimality. An edge with two fixed endpoints is never
+    collapsed; an edge with one is collapsed *onto* the fixed vertex, which is what keeps a cell
+    face plane exactly where the clip put it.
+
+    This is the fallback kernel, used when meshoptimizer is not installed --
+    :class:`maille.MeshoptSimplifier` is both better shaped and better measured. Two things to
+    know about it: the edge order is computed once from the initial lengths and never
+    re-measured as vertices move, and no collapse is checked for validity, so an aggressive
+    target on a flat-faced surface can consume it entirely. :mod:`maille.simplify` handles the
+    second by relaxing the target until something survives.
+
+    ``check_interval`` is how many collapses to make between face counts; ``None`` picks 16 on
+    a mesh above 256 faces and 1 below, where the overshoot would be fatal. ``placement`` is
+    ``"midpoint"`` (move both endpoints to their average) or ``"onto_fixed"`` (never move a
+    vertex at all, collapsing onto one endpoint -- lower quality, but every surviving vertex
+    keeps its exact input position).
 
     Returns the surviving vertices, the remapped faces, and the largest distance any vertex
-    moved -- which is the decimation half of ``lod_error``.
+    moved -- which is this kernel's estimate of its own error.
     """
+    if placement not in ("midpoint", "onto_fixed"):
+        raise ValueError(f"`placement` is 'midpoint' or 'onto_fixed', got {placement!r}.")
     vertices = np.asarray(vertices, dtype=np.float64).copy()
     faces = np.asarray(faces, dtype=np.int64)
     fixed = np.asarray(fixed, dtype=bool)
@@ -103,7 +120,9 @@ def decimate_fixed(
     # that buys: one collapse can retire several faces, so a batch of 16 can take a 12-face
     # object from above its target to nothing at all. Below a few hundred faces the count is
     # cheap and the overshoot is fatal, so it is paid every collapse.
-    check_interval = 16 if len(faces) > 256 else 1
+    if check_interval is None:
+        check_interval = 16 if len(faces) > 256 else 1
+    check_interval = max(1, int(check_interval))
 
     collapses_since_check = 0
     for edge_index in order:
@@ -117,8 +136,10 @@ def decimate_fixed(
             parent[rb] = ra
         elif is_fixed[rb]:
             parent[ra] = rb
-        else:
+        elif placement == "midpoint":
             vertices[ra] = 0.5 * (vertices[ra] + vertices[rb])
+            parent[rb] = ra
+        else:  # "onto_fixed": collapse without moving anything
             parent[rb] = ra
 
         collapses_since_check += 1
@@ -203,6 +224,28 @@ def on_planes(vertices: np.ndarray, extent: np.ndarray, tolerance: float = 1e-6)
     """Which vertices lie on a cell face plane of a grid with this cell extent."""
     scaled = vertices / extent
     return np.asarray((np.abs(scaled - np.rint(scaled)) < tolerance).any(axis=1), dtype=bool)
+
+
+def border_vertices(faces: np.ndarray) -> np.ndarray:
+    """The vertices on the mesh's open boundary -- those touching an edge with one triangle.
+
+    **This is the curve that must not move**, and it is a sharper statement of it than
+    :func:`on_planes`. A fragment is cut from its object with ``cap=False``, so the cut leaves
+    an open boundary: exactly the curve the neighbouring cell's surface continues across. A
+    vertex merely *lying on* a cell plane without being on that boundary is interior to this
+    sheet, and nothing across the plane depends on where it goes.
+
+    So ``on_planes`` is a conservative superset -- safe, and what the greedy collapse uses --
+    while this is the precise condition, and what lets a simplifier that only ever *removes*
+    vertices prove it kept ``LOCKED``.
+    """
+    faces = np.asarray(faces, dtype=np.int64)
+    if not len(faces):
+        return np.empty(0, dtype=np.int64)
+    edges = np.sort(np.vstack([faces[:, [0, 1]], faces[:, [1, 2]], faces[:, [2, 0]]]), axis=1)
+    unique, counts = np.unique(edges, axis=0, return_counts=True)
+    border = unique[counts == 1]
+    return np.unique(border) if len(border) else np.empty(0, dtype=np.int64)
 
 
 # --------------------------------------------------------------------------- #
@@ -303,6 +346,7 @@ def drop_degenerate(vertices: np.ndarray, faces: np.ndarray) -> np.ndarray:
 
 
 __all__ = [
+    "border_vertices",
     "clip_to_cells",
     "concatenate_and_weld",
     "decimate_fixed",
