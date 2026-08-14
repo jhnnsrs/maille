@@ -1,6 +1,6 @@
 [project]
 name = "maille"
-version = "1.0.0"
+version = "1.0.1"
 description = "a level-of-detail mesh wire format: octree-partitioned surfaces written to any object store"
 authors = [{ name = "jhnnsrs", email = "jhnnsrs@gmail.com" }]
 requires-python = ">=3.11"
