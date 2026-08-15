@@ -553,6 +553,15 @@ def _boundary_vertices_survive_decimation(collection: Collection) -> Check:
     The tolerance is the coarse cell's quantization step. Two levels quantize against different
     extents, so an exactly-locked vertex still lands on two slightly different reconstructions
     -- ``geometry.py`` works the residual out exactly, and it is smaller than one step.
+
+    **It is one step in two different units, and they must not be swapped.** Deciding whether a
+    vertex is *on* a plane is a question in cell-relative coordinates, where 1.0 is a whole cell
+    and one quantum is ``1 / QUANT_MAX``; deciding whether two vertices are *the same point* is
+    a question in voxels, where that same quantum is ``max(extent) / QUANT_MAX``. Passing the
+    voxel figure to :func:`~maille.geometry.on_planes` multiplies the tolerance by the extent --
+    half a voxel at level 1, two voxels at level 2 -- and the check then collects vertices that
+    merely pass near a plane, which nothing pinned and which are free to move. Every one of them
+    is then reported as drift. A closed surface tangent to a cell face is enough to trigger it.
     """
     drifted: list[str] = []
     compared = 0
@@ -564,7 +573,9 @@ def _boundary_vertices_survive_decimation(collection: Collection) -> Check:
             continue
         _, extent = cell_box(entry.cell, entry.level, collection.grid.cell_size)
         planes = np.asarray(extent, dtype=np.float64)
-        step = float(np.max(extent)) / QUANT_MAX
+        # The same quantum, in the two units the checks below need it in.
+        step = float(np.max(extent)) / QUANT_MAX  # voxels: is this the same point?
+        on_plane_tolerance = 1.0 / QUANT_MAX  # cell-relative: is this on a face?
         try:
             coarse = collection.read_cell(entry.level, entry.cell).vertices
             fine = np.vstack([collection.read_cell(c.level, c.cell).vertices for c in children])
@@ -573,8 +584,8 @@ def _boundary_vertices_survive_decimation(collection: Collection) -> Check:
         if not len(coarse) or not len(fine):
             continue
 
-        pinned = coarse[on_planes(coarse, planes, tolerance=step)]
-        held = fine[on_planes(fine, planes, tolerance=step)]
+        pinned = coarse[on_planes(coarse, planes, tolerance=on_plane_tolerance)]
+        held = fine[on_planes(fine, planes, tolerance=on_plane_tolerance)]
         compared += len(pinned) + len(held)
         appeared = _count_unmatched(pinned, held, tolerance=2.0 * step) if len(pinned) else 0
         vanished = _count_unmatched(held, pinned, tolerance=2.0 * step) if len(held) else 0

@@ -46,12 +46,18 @@ from maille.errors import FormatError
 #: The format version this writer emits and this reader accepts. It selects how every byte in
 #: the prefix is read, so it is never defaulted on a reader's behalf and never guessed.
 #:
-#: 4 adds the two things a reader needs to fetch *one cell* rather than its whole level: the
-#: ``part`` / ``row_group`` locator on every cell-catalog row, and a byte length beside every
-#: file named in ``files``. The length is what lets a reader range-read a Parquet part without
-#: being able to stat it -- a store is only asked for ``get``/``put``/``list``, and an HTTP one
-#: can do neither ``head`` nor ``list``.
-SPEC_VERSION = "4"
+#: **1 is the first published version**, and it includes the two things a reader needs to fetch
+#: *one cell* rather than its whole level: the ``part`` / ``row_group`` locator on every
+#: cell-catalog row, and a byte length beside every file named in ``files``. The length is what
+#: lets a reader range-read a Parquet part without being able to stat it -- a store is only
+#: asked for ``get``/``put``/``list``, and an HTTP one can do neither ``head`` nor ``list``.
+#:
+#: The counter went 1..4 while the format was still being cut, before anything else read a
+#: manifest maille wrote; those numbers named drafts rather than versions anyone can hold, so
+#: the first one that means something is 1. This is the number a server checks against -- see
+#: ``SUPPORTED_VERSIONS`` in mikro's ``datalayer/maille.py``, kept in step by the contract
+#: rather than by an import.
+SPEC_VERSION = "1"
 
 #: The manifest's name, at the root of the collection's prefix.
 MANIFEST_NAME = "maille.json"

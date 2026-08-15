@@ -37,7 +37,7 @@ builder drives them through.
 """
 
 from maille.simplifiers.greedy import SIMPLIFICATION_GREEDY, GreedyEdgeCollapse
-from maille.simplifiers.measure import boundary_held, measure_deviation
+from maille.simplifiers.measure import boundary_held, measure_deviation, pinned_held
 from maille.simplifiers.protocol import Simplified, Simplifier
 from maille.simplifiers.quadric import SIMPLIFICATION_QUADRIC, QuadricSimplifier
 from maille.simplifiers.registry import (
@@ -57,6 +57,7 @@ __all__ = [
     "Simplifier",
     "boundary_held",
     "measure_deviation",
+    "pinned_held",
     "resolve_simplifier",
     "simplifier_for",
     "simplify_to_target",

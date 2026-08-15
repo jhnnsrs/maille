@@ -226,7 +226,13 @@ def snap_boundary(
 def on_planes(
     vertices: npt.NDArray[np.float64], extent: npt.NDArray[np.float64], tolerance: float = 1e-6
 ) -> npt.NDArray[np.bool_]:
-    """Which vertices lie on a cell face plane of a grid with this cell extent."""
+    """Which vertices lie on a cell face plane of a grid with this cell extent.
+
+    ``tolerance`` is **cell-relative, not in voxels**: the comparison happens after dividing by
+    ``extent``, so 1.0 is a whole cell and one quantization step is ``1 / QUANT_MAX``. Handing
+    it a distance in voxels multiplies it by the extent, which on a 256-voxel cell turns a
+    quantum into half a voxel and collects vertices that merely pass near a plane.
+    """
     scaled = vertices / extent
     return np.asarray((np.abs(scaled - np.rint(scaled)) < tolerance).any(axis=1), dtype=bool)
 

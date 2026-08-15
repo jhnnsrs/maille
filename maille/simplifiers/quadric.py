@@ -13,7 +13,7 @@ import numpy as np
 import numpy.typing as npt
 
 from maille.simplifiers.greedy import GreedyEdgeCollapse
-from maille.simplifiers.measure import boundary_held, measure_deviation
+from maille.simplifiers.measure import boundary_held, measure_deviation, pinned_held
 from maille.simplifiers.protocol import Simplified, Simplifier
 
 #: The ``simplification`` value that selects this backend, and the format's default.
@@ -32,9 +32,10 @@ class QuadricSimplifier:
     ``aggression`` is the library's ``agg``: how hard it pushes per iteration. Higher reaches a
     target in fewer passes and strays further doing it; 7 is the library's default.
 
-    ``verify_border`` checks afterwards that every boundary vertex is still present at its exact
-    position, and falls back to ``fallback`` for that piece if one is not. The check costs one
-    lookup per boundary vertex and is what turns a library flag into a guarantee.
+    ``verify_border`` checks afterwards that every vertex that may not move is still present at
+    its exact position -- the topological boundary *and* the ``fixed`` mask, which is not always
+    inside it -- and falls back to ``fallback`` for that piece if one is not. The check costs one
+    lookup per such vertex and is what turns a library flag into a guarantee.
 
     **What this costs, stated plainly.** ``preserve_border`` is all-or-nothing: it pins the
     whole topological boundary, and after the children of a coarse cell are welded that boundary
@@ -57,8 +58,11 @@ class QuadricSimplifier:
     verify_border: bool = True
     fallback: Simplifier = field(default_factory=GreedyEdgeCollapse)
     name: str = SIMPLIFICATION_QUADRIC
-    #: Held by the topological boundary rather than by the mask it is handed -- a strict subset
-    #: of it, and the more precise statement of what may not move. See `border_vertices`.
+    #: What *limits* this backend is the topological boundary, not the mask it is handed: the
+    #: mask is what it is checked against afterwards (see `verify_border`), but the pinning that
+    #: costs it a budget is `preserve_border`'s, which is usually wider. The flag is read only
+    #: to explain a missed budget, so it names the constraint that caused one. See
+    #: `border_vertices`.
     uses_fixed_mask: bool = False
 
     def simplify(
@@ -90,9 +94,17 @@ class QuadricSimplifier:
         if not len(kept_faces):
             return Simplified(source_vertices[:0], kept_faces, 0.0, False, self.name)
 
-        if self.verify_border and not boundary_held(source_vertices, source_faces, kept_vertices):
-            # A boundary vertex moved or vanished, which is a crack between levels rather than a
-            # quality regression. Hand the piece to the fallback rather than shipping it.
+        if self.verify_border and not (
+            boundary_held(source_vertices, source_faces, kept_vertices)
+            # `preserve_border` holds the *topological* boundary, which is usually a superset of
+            # the pinned set but is not one for a closed surface tangent to a cell face -- that
+            # vertex is on a plane the neighbouring cell shares and on no boundary at all. So
+            # the mask is checked as well as the flag trusted. See `pinned_held`.
+            and pinned_held(source_vertices, kept_vertices, fixed)
+        ):
+            # A pinned vertex moved or vanished, which is a crack between levels rather than a
+            # quality regression -- and, moved outward, a vertex its own cell cannot quantize.
+            # Hand the piece to the fallback rather than shipping it.
             return self.fallback.simplify(source_vertices, source_faces, fixed=fixed, target_faces=target_faces)
 
         return Simplified(

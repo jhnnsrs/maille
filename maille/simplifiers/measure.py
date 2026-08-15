@@ -51,4 +51,34 @@ def boundary_held(
     return bool((distances == 0.0).all())
 
 
-__all__ = ["boundary_held", "measure_deviation"]
+def pinned_held(
+    vertices: npt.NDArray[np.float64], kept: npt.NDArray[np.float64], fixed: npt.NDArray[np.bool_]
+) -> bool:
+    """Whether every vertex the *format* pins survived at exactly its old position.
+
+    :func:`boundary_held` asks the same question of the topological boundary, which is the thing
+    a library flag like ``preserve_border`` can express. That boundary is *usually* a superset
+    of the pinned set -- a fragment cut at a cell plane has that plane as an open boundary --
+    but it is not always one, and the exception is not exotic: **a closed surface merely tangent
+    to a cell face** has a vertex on that face and no open boundary anywhere, so nothing pins it
+    and a quadric collapse is free to move it wherever the error says.
+
+    Moving it is two failures at once. It is a crack, because the neighbouring cell quantizes
+    that same coordinate against a different box and the format promises the two agree. And when
+    it moves *outward* it is worse than a crack: the vertex leaves the cell box, per-cell
+    quantization cannot represent a coordinate outside its own cell, and the whole build fails
+    at :func:`maille.encode_positions` -- correctly, but a long way from the cause.
+
+    So the ``fixed`` mask is checked directly rather than trusted to a proxy. Exact equality for
+    the same reason :func:`boundary_held` uses it: anything short of it is the gap.
+    """
+    fixed = np.asarray(fixed, dtype=bool)
+    if fixed.shape != (len(vertices),) or not fixed.any():
+        return True
+    from scipy.spatial import cKDTree  # type: ignore[attr-defined]
+
+    distances = cKDTree(np.asarray(kept, dtype=np.float64)).query(np.asarray(vertices[fixed], dtype=np.float64))[0]
+    return bool((distances == 0.0).all())
+
+
+__all__ = ["boundary_held", "measure_deviation", "pinned_held"]

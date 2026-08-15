@@ -15,9 +15,11 @@ from typing import Any
 import numpy as np
 import pyarrow as pa
 import pytest
+import trimesh
 
 import maille
 from maille.frames import parquet_to_table, table_to_parquet
+from maille.geometry import on_planes
 from maille.verify import TIERS, verify
 from tests.conftest import CELL_SIZE, LEVELS
 
@@ -282,7 +284,11 @@ def test_a_boundary_vertex_that_moved_is_caught(sound: maille.MemoryStore):
                 codec=collection.encoding.codec,
                 vertex_count=counts[row],
             )
-            pinned = on_planes(vertices, extent, tolerance=float(extent.max()) / maille.QUANT_MAX)
+            # Cell-relative, the unit `on_planes` measures in -- a voxel figure here would find
+            # a vertex merely *near* a plane, and displacing one of those is not a violation of
+            # anything, so the test would be asserting that the verifier reports a false
+            # positive.
+            pinned = on_planes(vertices, extent, tolerance=1.0 / maille.QUANT_MAX)
             if not pinned.any():
                 continue
             # Several quanta, so the displacement cannot be mistaken for the documented
@@ -304,6 +310,54 @@ def test_a_boundary_vertex_that_moved_is_caught(sound: maille.MemoryStore):
         pytest.fail("the fixture has no pinned vertex at any level to displace")
 
     assert "on-plane vertices are held fixed across levels (boundary: LOCKED)" in failed(sound, tier="geometry")
+
+
+def test_a_surface_tangent_to_a_cell_plane_is_not_reported_as_drifted():
+    """The false positive the LOCKED check used to produce, and the reason it did.
+
+    A *closed* surface resting exactly on a cell face pins nothing: the plane touches it at one
+    point, so no cut happens, no vertex lies on a face, and the decimator is free to move every
+    vertex it has. The check must therefore find nothing to complain about -- and it did
+    complain, because it asked :func:`~maille.geometry.on_planes` a cell-relative question in
+    voxels. That inflated its tolerance by the extent, so the sphere's nearly-flat bottom cap
+    counted as "on the plane", and every vertex of it that the decimator legitimately spent was
+    reported as a vertex that failed to survive.
+
+    The fixture elsewhere in this suite cannot catch this: its objects sit at off-centre
+    positions and none of them touches a plane, so the inflated neighbourhood stays empty.
+    """
+    tangent = trimesh.creation.icosphere(subdivisions=3, radius=12.0)
+    tangent.apply_translation([60.0, 60.0, 12.0])  # lowest vertex exactly on the z=0 plane
+    clear = trimesh.creation.icosphere(subdivisions=3, radius=9.0)
+    clear.apply_translation([190.0, 70.0, 30.0])
+
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        built = maille.build_collection({1: tangent, 2: clear}, cell_size=CELL_SIZE, levels=LEVELS)
+    store = maille.MemoryStore()
+    maille.write_collection(built, store, "c")
+
+    report = verify(opened(store), tier="geometry")
+    assert report, f"a tangent surface is not a crack:\n{report}"
+
+
+def test_the_on_plane_tolerance_is_cell_relative_and_not_voxels():
+    """The unit itself, pinned -- half a voxel is not "on the plane" of a 256-voxel cell.
+
+    Stated directly rather than only through the collection above, because the two figures are
+    a factor of the extent apart and both are spelled with ``QUANT_MAX``: the mistake reads as
+    correct at the call site, and only a test that knows the units apart will say otherwise.
+    """
+    extent = np.array([256.0, 256.0, 128.0])
+    quantum = 1.0 / maille.QUANT_MAX
+
+    on_the_plane = np.array([[0.0, 40.0, 40.0]])
+    half_a_voxel_off = np.array([[0.5, 40.0, 40.0]])
+
+    assert on_planes(on_the_plane, extent, tolerance=quantum).all()
+    assert not on_planes(half_a_voxel_off, extent, tolerance=quantum).any()
+    # The voxel-valued tolerance the check used to pass, and what it swept in.
+    assert on_planes(half_a_voxel_off, extent, tolerance=float(extent.max()) / maille.QUANT_MAX).any()
 
 
 def test_the_report_reads_as_something_a_person_would_read(sound: maille.MemoryStore):
